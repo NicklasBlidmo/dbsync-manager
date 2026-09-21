@@ -4,9 +4,13 @@ Web UI and supervisor for Mergin Maps DB Sync: set up, monitor, pause and remove
 synchronisations between Mergin Maps projects and PostGIS, packaged as one
 Docker container.
 
-Status: v0.2.1 draft, 2026-09-21. Author: Nicklas Blidmo (Arkeologikonsult), with Claude.
+Status: v0.3 draft, 2026-09-21. Author: Nicklas Blidmo (Arkeologikonsult), with Claude.
 v0.2.1: the consistency rules in §6 are now grounded in db-sync 2.3.0's
 actual pull order and the 2026-09-16 POC incident (see §15).
+v0.3: `state` is split into `desired_state`, `process_state` and `health`
+with a rule that catches a live but stuck daemon; remove and re-init are
+restart-safe operations with an explicit step log (§5, §6). This closes the
+internal review; implementation starts from this revision.
 v0.2 incorporates internal review: the consistency check is now stated as
 "no divergence detected" rather than "verified" (§6), the direction check
 shows facts instead of a verdict (§7), hooks have stricter secret, failure
@@ -186,16 +190,41 @@ database            id, name, dsn_enc (host, port, dbname, user, password),
 sync_project        id, mergin_project (workspace/name), mergin_project_id (uuid),
                     mergin_account_id, database_id,
                     schema_prefix, init_from (gpkg|db), sleep_time,
-                    state (draft|initializing|running|paused|error|removing|removed),
-                    desired_state (running|paused),
+                    desired_state (running|paused|removed),
+                                       -- written by people (UI/API) only
+                    process_state (stopped|initializing|running|stopping|
+                                   crashed|blocked),
+                    process_reason,    -- text for crashed/blocked: exit code
+                                       -- and next restart, "post_init not ok",
+                                       -- "operation <id> open", ...
+                                       -- both written by the supervisor only
+                    health (unknown|ok|catching_up|stale|behind|diverged|stuck),
+                    health_since,      -- written by the consistency check only
                     post_init_hook_id, pre_remove_hook_id, post_pull_hook_id,
                     post_init_ok_at,   -- null until the post_init hook has
                                        -- succeeded; see §8
-                    notify_emails[], created_by, created_at, updated_at
+                    notify_emails[], created_by, created_at, updated_at,
+                    removed_at         -- row is kept after remove for audit
 
-sync_connection     id, sync_project_id, sync_file (points.gpkg),
+sync_connection     id, sync_project_id, database_id (copied from the project),
+                    sync_file (points.gpkg),
                     modified_schema, base_schema, skip_tables[], include_tables[]
                     -- one row per GeoPackage; mirrors one db-sync "connection"
+                    -- UNIQUE (database_id, modified_schema) and
+                    -- UNIQUE (database_id, base_schema): two syncs can never
+                    -- target the same schema. Rows are deleted when the
+                    -- project is removed, which frees the names.
+
+operation           id, sync_project_id, kind (remove|reinit),
+                    params (jsonb: drop_schemas, init_from,
+                            confirm_pending_loss),
+                    status (pending|running|failed|done|cancelled),
+                    step,              -- name of the current/failed step
+                    steps (jsonb: [{name, started_at, finished_at, ok, detail}]),
+                    error, requested_by, requested_at, finished_at
+                    -- partial UNIQUE (sync_project_id) WHERE status IN
+                    -- (pending, running, failed): one open operation per
+                    -- project. See §6 "Operations".
 
 sync_run            id, sync_project_id, kind (init|pull|push|hook|check),
                     started_at, finished_at, ok, summary (jsonb)
@@ -217,10 +246,14 @@ sync_status         sync_project_id, sync_connection_id,
                                 can write to any synced table, incl. PUBLIC),
                     direction (one_way|two_way|db_edits_cannot_push),
                     last_pull_at, last_error_at, last_error,
+                    local_version_changed_at (when local_version last moved;
+                                              feeds the "stuck" rule),
                     checked_at, check_error (null when the check itself ran;
-                                             otherwise why it could not)
+                                             otherwise why it could not),
+                    last_ok_check_at
                     -- one row per connection, overwritten each check; the
-                    -- streak counters are the only state carried between checks
+                    -- streak counters and the two timestamps are the only
+                    -- state carried between checks
 
 event               id, sync_project_id, at, level (info|warning|error),
                     source (supervisor|dbsync|hook|user), message,
@@ -249,23 +282,74 @@ starting children, so every project has exactly one owner at any time. The
 web server never starts or signals children; it only writes `desired_state`
 and events, which the supervisor picks up on the next tick.
 
-Loop, every `tick` (default 30 s):
+### State model
 
-1. Read `sync_project` rows. For each project whose `desired_state` is
-   `running` and that has no live child: **render** db-sync's `config.yaml`
-   from the registry rows (`sync_project` + its `sync_connection`s + the
-   referenced `mergin_account` and `database`) into `/data/projects/<id>/`,
-   then start `python dbsync_daemon.py config.yaml
-   --log-file ... --log-verbosity INFO`, record `state = initializing` if the
-   base schema does not exist yet, else `running`.
-2. For each project whose `desired_state` is `paused` and has a live child:
-   SIGTERM, wait, `state = paused`.
-3. For each live child: if it exited, record the exit in `event`, set `state
-   = error`, schedule restart with exponential backoff (30 s → 10 min).
-4. When a project is `initializing` and every connection's base schema
-   comment has appeared: run the `post_init` hook if one is configured (§8).
-   On success set `post_init_ok_at` and `state = running`. On failure stop
-   the child, set `state = error`, and do not restart it until the hook has
+A project has three independent state fields, each with exactly one writer:
+
+| Field | Values | Written by | Answers |
+|---|---|---|---|
+| `desired_state` | running, paused, removed | people, through the UI or API | What should this project be doing? |
+| `process_state` | stopped, initializing, running, stopping, crashed, blocked | the supervisor, from what it observes | Is db-sync's process alive, and if not, why? |
+| `health` | unknown, ok, catching_up, stale, behind, diverged, stuck | the consistency check, from data | Is the database actually keeping up with Mergin? |
+
+They are kept apart because each can be wrong about the others. A live
+process is not a healthy sync: upstream `dbsync_daemon.py` catches
+`DbSyncError` inside its loop and keeps running, so in the POC incident the
+daemon stayed alive for hours retrying a push that returned 403 while the
+database fell further behind. A crashed process is not an unhealthy
+database: the data is exactly as it was, and the supervisor will restart
+the child. And a paused project is neither crashed nor unhealthy.
+
+`process_state` semantics:
+
+- **stopped**: no child, and none wanted (paused/removed) or not yet started.
+- **initializing**: child alive, at least one connection's base schema
+  comment missing, or `post_init_ok_at` null with a post_init hook
+  configured. Progress is shown as which connections have their base schema.
+- **running**: child alive and initialised.
+- **stopping**: SIGTERM sent, waiting.
+- **crashed**: child exited without being asked; `process_reason` holds the
+  exit code and the time of the next restart attempt.
+- **blocked**: `desired_state` is running but the supervisor refuses to
+  start the child; `process_reason` says why: the post_init hook has not
+  succeeded, an operation is open, or the last start failed on credentials.
+
+`health` is computed per connection by the check and rolled up per project
+(worst wins, in this order): **diverged** > **behind** > **stuck** >
+**stale** > **unknown** > **catching_up** > **ok**. Definitions are in step
+5 below. The home page shows all three fields as separate badges; there is
+no single "state" badge, because a single badge is what hid the incident.
+
+### Loop, every `tick` (default 30 s)
+
+0. **Operations.** For every `operation` with status `pending` or `running`,
+   execute its steps from `step` onwards until it is `done` or `failed`
+   (see "Operations" below). A project with an open operation is skipped by
+   steps 1–4 and shows `process_state = blocked`.
+1. **Start.** For each project with `desired_state = running`, no live child
+   and not blocked: **render** db-sync's `config.yaml` from the registry
+   rows (`sync_project` + its `sync_connection`s + the referenced
+   `mergin_account` and `database`) into `/data/projects/<id>/`, then start
+   `python dbsync_daemon.py config.yaml --log-file ... --log-verbosity
+   INFO`. `process_state` becomes `initializing` if any base schema comment
+   is missing or a post_init hook has not yet succeeded, else `running`.
+   Blocked means: an operation is open; or a post_init hook is configured,
+   every base schema comment exists and `post_init_ok_at` is null (the hook
+   failed or has not run); or the previous start failed on credentials
+   (`process_reason` set, cleared when the credentials row is edited).
+2. **Stop.** For each project with `desired_state` paused or removed and a
+   live child: SIGTERM, `process_state = stopping`, wait up to 60 s, then
+   SIGKILL; `stopped`.
+3. **Exit.** For each live child that has exited: record the exit in
+   `event`, `process_state = crashed` with the exit code, schedule a restart
+   with exponential backoff (30 s → 10 min). After the third consecutive
+   crash raise `condition = "process_crashed"` (alerts, §6 step 5); it
+   resolves when the child has stayed up for one `check_interval`.
+4. **post_init.** When a project is `initializing` and every connection's
+   base schema comment has appeared: run the `post_init` hook if one is
+   configured (§8). On success set `post_init_ok_at` and `process_state =
+   running`. On failure stop the child and set `process_state = blocked`
+   with reason "post_init failed"; it stays blocked until the hook has
    succeeded (operator: "run hook now") or the project is re-initialised.
 5. Every `check_interval` (default 5 min) run the **consistency check** per
    connection and write `sync_status`. The check uses the project's own
@@ -337,6 +421,36 @@ Loop, every `tick` (default 30 s):
    check (§14). Until then the version rule is the safety net and the count
    rules are the backup.
 
+   **Health**, computed from the same check, per connection:
+   - **unknown**: never checked, or every check so far has failed.
+   - **stale**: the latest check failed (`check_error` set) and the last
+     successful one is older than `3 × check_interval`. The previous values
+     are shown greyed. Raises `condition = "check_failed"`.
+   - **diverged**: `divergence:<table>` or `stranded_db_edits` is active.
+   - **behind**: `db_behind` is active.
+   - **stuck**: `server_version > local_version` and `local_version` has not
+     moved for longer than `stuck_after` (default 30 min; must be well above
+     the project's `sleep_time`), while `process_state` is `running`. This
+     is the rule that catches a live daemon that is no longer pulling. It is
+     *not* evaluated while the project is paused, blocked or crashed (then
+     the cause is visible in `process_state`), and it never fires for an
+     idle project, because there `server_version == local_version`. When it
+     first becomes active the supervisor restarts the child **once** (a hung
+     network call is the benign cause); if it is still active one
+     `stuck_after` later, raise `condition = "stuck"` and stop restarting.
+     The POC 403 loop is the case where a restart does not help: the fix is
+     operator action on the database difference, or re-init.
+   - **catching_up**: `server_version > local_version` but `local_version`
+     moved since the previous check. Normal after a pause or a burst of
+     field edits; no alert.
+   - **ok**: `server_version == local_version == db_version` and no count
+     condition active. Shown as "no divergence detected", not "in sync".
+
+   Per project, `health` is the worst of its connections, and
+   `health_since` is when it last changed. Alert conditions therefore are:
+   `db_behind`, `divergence:<table>`, `stranded_db_edits`, `stuck`,
+   `check_failed` and `process_crashed`, each de-duplicated as below.
+
    What the check can and cannot say. Equal counts prove nothing about
    content: an UPDATE that was dropped, or a DELETE and an INSERT in the same
    cycle, leave the counts equal. The project page therefore shows **"no
@@ -357,11 +471,79 @@ Loop, every `tick` (default 30 s):
 **The registry is the source of truth; the config file is a derived
 artefact.** It is regenerated on every start and never edited by hand. Nothing
 in the manager reads `config.yaml` back; if the file and the registry disagree,
-the registry wins on the next start. This is what makes add and pause plain
-database operations plus a process signal. Remove and re-init are multi-step
-(stop, archive, drop, restart) and need a restart-safe operation log; that
-design is deferred to v0.3 (§15) and until then the v1 implementation treats
-them as best-effort with a clear "operation interrupted" event.
+the registry wins on the next start. This is what makes add, pause and
+resume plain database operations plus a process signal. Remove and re-init
+are not: they are multi-step, partly destructive, and must survive a
+container restart in the middle. They are modelled as operations.
+
+### Operations
+
+An `operation` row (§5) is a small state machine executed only by the
+supervisor, never by the web process. The web process creates the row with
+`status = pending` and the parameters; the supervisor runs it in step 0 of
+every tick. Rules:
+
+- **One open operation per project**, enforced by the partial unique index.
+  A second request gets HTTP 409 with a link to the open one. While an
+  operation is open (`pending`, `running` or `failed`), pause, resume,
+  re-init, remove and "run hook now" are all refused with 409, and the
+  supervisor does not start the child (`process_state = blocked`, reason
+  "operation N open"). So two people cannot issue conflicting actions, and
+  a person cannot race the supervisor.
+- **Every step is idempotent** and the step name is written to `step`
+  *before* the step runs. If the supervisor dies mid-step, the next
+  supervisor finds the operation `running` at that step and runs it again.
+  This is why hooks must be idempotent (§8) and why drops use `IF EXISTS`.
+- **Failure stops the operation at that step** (`status = failed`, `error`
+  set, `event(error)`). The operator sees which step failed and why, fixes
+  the cause, and either **retries** (resume at the failed step) or
+  **cancels**. Cancel is offered only if no destructive step has started;
+  once `drop_schemas` has begun, the only way forward is retry. A cancelled
+  operation lifts the block and the project returns to its `desired_state`.
+- The `steps` log records every attempt with timestamps and a short detail
+  (rows found, schemas dropped, hook run id), so the project page can show
+  "step 3 of 6, pre_remove hook, running since 12:04".
+
+**remove** (`params.drop_schemas` true or false):
+
+| # | Step | Does | Idempotent because |
+|---|---|---|---|
+| 1 | `block` | mark the project blocked; nothing else | pure write |
+| 2 | `stop_child` | SIGTERM, wait 60 s, SIGKILL; verify the pid is gone | no child = done |
+| 3 | `pre_remove_hook` | run the hook as a `sync_run` (§8); skipped if none configured | hook contract |
+| 4 | `drop_schemas` | only if `drop_schemas`: for each `sync_connection`, `DROP SCHEMA IF EXISTS <base> CASCADE` and `... <modified> CASCADE`, exactly the names in the registry, never a pattern, one transaction per schema, with the project's own database credentials | IF EXISTS |
+| 5 | `delete_workdir` | remove `/data/projects/<id>` | missing = done |
+| 6 | `mark_removed` | `desired_state = removed`, `removed_at`, delete `sync_connection` and `sync_status` rows (frees the schema names), keep `sync_project` and its events; `status = done` | pure write |
+
+A failed `pre_remove_hook` (step 3) therefore never reaches step 4: an
+archive that failed is never followed by a drop. A failed `drop_schemas`
+(typically objects owned by another role depending on a synced table) is
+reported with PostgreSQL's error; the operator resolves it in the database
+and retries.
+
+**reinit** (`params.init_from`, `params.confirm_pending_loss`):
+
+| # | Step | Does |
+|---|---|---|
+| 1 | `block` | as above |
+| 2 | `stop_child` | as above |
+| 3 | `snapshot_pending` | record `modified_count - base_count` per table in the step detail. If any is non-zero and `confirm_pending_loss` is false, **fail** with "pending database changes would be lost"; the UI already required typing the project name (§9), this is the server-side enforcement |
+| 4 | `pre_remove_hook` | the same hook as remove, since the schemas are about to be dropped; this is where a dump belongs |
+| 5 | `drop_schemas` | always, as above |
+| 6 | `delete_workdir` | as above |
+| 7 | `reset` | `post_init_ok_at = null`, `sync_status` rows deleted, `health = unknown`; `status = done` |
+
+After `reset` the operation is closed, the block is lifted, and step 1 of
+the next tick starts the child normally. db-sync runs init from
+`init_from`, the base schema comments appear, and the `post_init` hook runs
+through loop step 4 as for a new project.
+
+**Schema collisions** are prevented before an operation is ever needed: the
+unique constraints on `sync_connection` (§5) reject a second project with
+the same target schema in the same database, and `add` checks the target
+database for existing schemas with the chosen names. With `init_from =
+gpkg` none may exist; with `init_from = db` the modified schema must exist
+and the base schema must not.
 
 Structured output from the child: db-sync logs are text. The supervisor
 tails the log file and classifies lines into `sync_run`/`event` with a small
@@ -480,14 +662,16 @@ tool. Contract:
   and the run is recorded as failed.
 - Exit code 0 = ok. Non-zero or timeout = `event(error)` and:
   - `post_init`: the project does **not** go to `running`. The supervisor
-    stops the child and sets `state = error`; `post_init_ok_at` stays null.
+    stops the child and sets `process_state = blocked` with reason
+    "post_init failed"; `post_init_ok_at` stays null.
     A post_init hook typically creates the grants, views and validation the
     organisation depends on, and a sync running without them is worse than a
     sync that waits. The operator fixes the cause and uses "run hook now";
     on success the project starts.
-  - `pre_remove`: the remove is **aborted** before anything destructive.
-    Schemas are not dropped and the project stays in its previous state with
-    an error event. An archive that failed must never be followed by a drop.
+  - `pre_remove`: the remove or re-init operation stops at that step
+    (`status = failed`, §6 "Operations") before anything destructive.
+    Schemas are not dropped; the operator retries or cancels. An archive
+    that failed must never be followed by a drop.
   - `post_pull`: logged, nothing else changes.
 
 `post_init` is where views, grants, indexes and lookup imports belong.
@@ -502,8 +686,10 @@ does mean a pull happened; the hook is not told which one.
 
 ## 9. Pages
 
-- **Projects** (home): table of all syncs with state badge, direction badge,
-  server/local/DB version, last pull, divergence indicator. Filters by state.
+- **Projects** (home): table of all syncs with three badges (desired,
+  process, health; §6 "State model"), direction badge, server/local/DB
+  version, last pull, and an "operation in progress" marker. Filters by
+  each badge. Removed projects are hidden unless asked for.
 - **Add sync**: search box → Mergin API project search (name, workspace) →
   project detail: list of GeoPackages with table names and feature counts
   (from the API's file list; counts require a download, so shown after a
@@ -517,8 +703,11 @@ does mean a pull happened; the hook is not told which one.
   what will be dropped and, from the last check, how many pending database
   changes per table would be lost (`modified_count - base_count`); if that
   number is non-zero or the last check failed, the confirmation requires
-  typing the project name. Remove runs the `pre_remove` hook first and
-  aborts on failure (§8).
+  typing the project name and sets `confirm_pending_loss`. Both create an
+  `operation` (§6) and the page then shows its step list live: which step
+  is running, since when, and on failure the error with **retry** and,
+  where allowed, **cancel** buttons. While an operation is open the other
+  action buttons are disabled with the reason shown.
 - **Settings**: Mergin accounts, databases, hooks, users (admin only), e-mail
   (SMTP).
 - **JSON API** (same views, `Accept: application/json`): `GET /api/projects`,
@@ -545,6 +734,7 @@ environment          DATABASE_URL           registry + default sync database
                      ALLOWED_HOSTS
                      SMTP_*                  optional
                      DBSYNC_TICK, DBSYNC_CHECK_INTERVAL   optional
+                     DBSYNC_STUCK_AFTER (default 30 min)   "stuck" health rule
                      DBSYNC_LOG_MAX_MB (default 20), DBSYNC_LOG_KEEP (default 5)
                      DBSYNC_RETENTION_DAYS (default 90)   events and runs
 ```
@@ -691,10 +881,30 @@ What carries over from the POC, and what does not:
   in `modified`. Expected: `db_edits_cannot_push` shown, `stranded_db_edits`
   alert after two checks, and whatever db-sync does next (error loop or
   silent skip) recorded as a finding for the rework.
-- **post_init failure**: hook exits 1. Expected: child stopped, state
-  `error`, `post_init_ok_at` null, no sync until "run hook now" succeeds.
+- **post_init failure**: hook exits 1. Expected: child stopped,
+  `process_state = blocked` with reason, `post_init_ok_at` null, no sync
+  until "run hook now" succeeds, then `running`.
 - **pre_remove failure**: archive hook exits 1 during remove-with-drop.
-  Expected: schemas still present, project not removed, error event.
+  Expected: operation `failed` at step `pre_remove_hook`, schemas still
+  present, project not removed, error event; retry after fixing the hook
+  completes the remove; cancel returns the project to `paused`/`running`.
+- **Live but stuck daemon** (the POC 403 loop): Reader account, create a
+  base/modified difference by hand, then edit in Mergin. Expected: the
+  child stays alive, `process_state = running`, `health = stuck` after
+  `stuck_after`, exactly one automatic restart, then the `stuck` alert and
+  no further restarts. An idle project (no edits for a day) stays `ok`.
+- **Interrupted remove**: kill the container between `pre_remove_hook` and
+  `drop_schemas`, and again during `drop_schemas`. Expected: on restart
+  the operation resumes at the recorded step, the hook is not run a second
+  time in the first case, the drop completes in the second, and the final
+  state is identical to an uninterrupted remove. The `steps` log shows both
+  attempts.
+- **Conflicting actions**: two users request remove and pause within one
+  tick. Expected: exactly one operation row, the other request gets 409,
+  the supervisor never starts the child while the operation is open.
+- **Schema collision**: add a second project whose derived prefix matches an
+  existing one in the same database. Expected: rejected at add with the
+  conflicting project named; after removing the first, the add succeeds.
 - **Recovery with unpushed edits**: two-way project, INSERT in `modified`
   that has not been pushed, delete `/data`, follow the §10 routine. Expected:
   the confirmation dialog shows the pending count, and "database is source"
@@ -703,15 +913,20 @@ What carries over from the POC, and what does not:
   within one sync cycle, all three applied.
 - Chaos: kill the child mid-pull; restart the container mid-init; make the
   database unreachable for two ticks; start a second supervisor against the
-  same registry. Expected: state `error` with a readable event, automatic
-  recovery, no duplicate rows, the second supervisor blocks on the lock.
+  same registry. Expected: `process_state = crashed` with a readable event
+  and `health` unchanged by the crash itself, `health = stale` while the
+  database is unreachable, automatic recovery, no duplicate rows, the
+  second supervisor blocks on the lock.
 
 ## 14. Roadmap
 
-v0.3 (next revision of this document, before implementation starts):
-process health separated from process liveness, and restart-safe
-multi-step operations for remove and re-init. See §15.
-v1: everything above except SSO and the CLI.
+v1: everything above except SSO and the CLI, built in vertical slices in
+this order, each ending with its §13 integration test: (1) skeleton with
+registry, credentials and Docker image, Django admin as the UI; (2)
+supervisor start/stop/pause/resume with a project added via admin; (3)
+consistency check, health and the project page; (4) hooks and alerts; (5)
+remove and re-init as operations; (6) add wizard and log history. The JSON
+API is added when `akdb project close` needs it.
 v1.1: OIDC login; per-project notification channels beyond e-mail (webhook);
 **content-level consistency check** as a spike: a normalised per-row hash
 per table computed in both SQLite and PostgreSQL (geometry as WKB, floats
@@ -731,20 +946,17 @@ Decided since v0.1:
   project before creating anything (one API call), and shows the permission
   it found so the operator sees the resulting direction (§7) before confirming.
 
-Deferred to v0.3 (raised in internal review, not yet designed):
+Decided in v0.3 (raised in internal review):
 
-- **Process health vs liveness.** Upstream `dbsync_daemon.py` catches
-  `DbSyncError` inside its loop and keeps running, so a project can be stuck
-  for weeks with a live child. `state` currently conflates process status and
-  sync health. Planned: split into `desired_state`, `process_state` and
-  `health`, add the rule "server version advanced but local/DB version has
-  not for longer than N" and a `stale`/`unknown` health when the check could
-  not run. Needs verification against the pinned db-sync version first.
-- **Restart-safe remove and re-init.** An operation table with per-step
-  status (registered → restart prevented → child stopped → pre_remove ran →
-  schemas dropped → done), each step idempotent, a project locked while an
-  operation is open so two users cannot issue conflicting actions, and a
-  uniqueness check on target schemas across projects.
+- **Process health vs liveness**: three fields with one writer each
+  (§6 "State model"), a `stuck` rule with one automatic restart, and
+  `stale`/`unknown` when the check cannot run. Verified motivation: upstream
+  `dbsync_daemon.py` catches `DbSyncError` inside its loop and keeps
+  running.
+- **Restart-safe remove and re-init**: the `operation` table and step
+  machine (§6 "Operations"), one open operation per project, cancel only
+  before the first destructive step, and schema uniqueness enforced in the
+  registry and checked in the target database at add.
 
 Verified against db-sync 2.3.0 and the POC log (2026-09-16):
 
@@ -754,9 +966,11 @@ Verified against db-sync 2.3.0 and the POC log (2026-09-16):
   applied and modified was not, which db-sync then mistook for local edits
   and tried to push; that is why "pending database changes" is shown with a
   warning whenever `db_version < local_version`.
-- The same incident is concrete evidence for the deferred process-health
-  item above: the daemon stayed alive for hours retrying a push that
-  returned 403, and nothing in v0.2 would have changed the project's state.
+- The same incident is the concrete case behind the `stuck` rule: the
+  daemon stayed alive for hours retrying a push that returned 403, and
+  nothing in v0.2 would have changed the project's state. In v0.3 it shows
+  as `process_state = running`, `health = stuck`, then `behind` once the
+  next edit arrives.
 
 Still open:
 
