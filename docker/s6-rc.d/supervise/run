@@ -1,3 +1,5 @@
 #!/command/with-contenv sh
 cd /app
+# Children (db-sync, hooks) inherit this; see web/run.
+export HOME=/home/manager
 exec s6-setuidgid manager python manage.py supervise

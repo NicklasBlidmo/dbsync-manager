@@ -52,7 +52,11 @@ def env_list(name, default=""):
 
 SECRET_KEY = env("DJANGO_SECRET_KEY", required=True)
 DEBUG = env_bool("DJANGO_DEBUG", False)
-ALLOWED_HOSTS = env_list("ALLOWED_HOSTS", "localhost,127.0.0.1")
+# The loopback names are always allowed, whatever .env says: the container's
+# own healthcheck calls http://127.0.0.1:8080/healthz, and an ALLOWED_HOSTS
+# that lists only the public address would otherwise mark a working container
+# unhealthy and fill the log with DisallowedHost tracebacks.
+ALLOWED_HOSTS = list(dict.fromkeys(env_list("ALLOWED_HOSTS") + ["localhost", "127.0.0.1", "[::1]"]))
 CSRF_TRUSTED_ORIGINS = env_list("CSRF_TRUSTED_ORIGINS")
 
 INSTALLED_APPS = [
@@ -134,6 +138,13 @@ LOGIN_REDIRECT_URL = "/admin/"
 USE_X_FORWARDED_HOST = True
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 SESSION_COOKIE_SECURE = env_bool("SECURE_COOKIES", False)
+# Own cookie names. Cookies belong to the host name, not to the port, so every
+# Django application on the same server shares "csrftoken" and "sessionid":
+# they log each other out, and a Secure csrftoken set by a neighbour over
+# HTTPS cannot be overwritten from plain HTTP, which makes every form here
+# fail with "CSRF cookie not set" until the browser's site data is cleared.
+SESSION_COOKIE_NAME = "dbsync_manager_sessionid"
+CSRF_COOKIE_NAME = "dbsync_manager_csrftoken"
 CSRF_COOKIE_SECURE = SESSION_COOKIE_SECURE
 SESSION_COOKIE_HTTPONLY = True
 X_FRAME_OPTIONS = "DENY"
@@ -142,7 +153,11 @@ X_FRAME_OPTIONS = "DENY"
 # --- i18n / static ---------------------------------------------------------
 
 LANGUAGE_CODE = "en-us"
-TIME_ZONE = "UTC"
+# One variable for the whole container. Django exports TIME_ZONE as TZ for its
+# own process only; gunicorn's master and db-sync follow the container's TZ.
+# Reading both from TZ keeps every log line on the same clock. Storage is UTC
+# regardless (USE_TZ); this is display and logging only.
+TIME_ZONE = env("TZ", "UTC") or "UTC"
 USE_I18N = True
 USE_TZ = True
 

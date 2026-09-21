@@ -6,4 +6,6 @@ cryptography>=43
 dj-database-url>=2.3
 gunicorn>=23
 whitenoise>=6.7
+# zoneinfo data for TZ (settings.TIME_ZONE); the base image may lack tzdata
+tzdata>=2024.1
 PyYAML>=6

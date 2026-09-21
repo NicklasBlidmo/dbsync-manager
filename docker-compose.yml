@@ -17,7 +17,9 @@ services:
     restart: unless-stopped
     env_file: .env
     ports:
-      - "8080:8080"
+      # Address and port on the host come from .env; 8080 is a common default
+      # and is often taken on a server that runs anything else.
+      - "${BIND_IP:-0.0.0.0}:${HTTP_PORT:-8080}:8080"
     volumes:
       - data:/data
     depends_on:

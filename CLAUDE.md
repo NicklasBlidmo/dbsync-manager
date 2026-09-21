@@ -22,11 +22,28 @@ Invariants learned the hard way:
   the Compose profile `postgis`; the default is an external server.
 - Static files are served by WhiteNoise. The admin must be checked with
   `DJANGO_DEBUG=false`, which is how the image runs.
+- Anything needed before the container can start (key generation, start-up
+  checks) must not import the Django settings, which require the keys, and
+  must not go through the s6 entrypoint, which runs migrate first. That is
+  why `manager/generate_keys.py` and `manager/preflight.py` are standalone.
+- Values written to `.env` must survive Compose: no `$`, `#`, quotes or
+  spaces. With duplicate lines the last one wins.
+- The host is shared. Assume other Compose projects and other Django apps on
+  the same address: no hardcoded host port (`BIND_IP`, `HTTP_PORT`), own
+  cookie names, loopback always in `ALLOWED_HOSTS` for the healthcheck.
+- A start-up failure must produce one readable line and a pause, never a
+  traceback in a tight restart loop. New failure modes found in the field go
+  into `preflight.py` with a test.
+- s6-setuidgid does not set HOME; every service script exports it.
 - The first production target already runs a live, hand-configured db-sync
   against the same database. Two daemons must never sync the same schemas.
 
 Working agreements:
 
-- The Docker build has not been verified yet (no Docker on the development
-  machine). Say so rather than assuming it works.
+- There is no Docker on the development machine. The image was first built
+  and run on the production server on 2026-09-21 (commit 59a8e4f). Changes
+  to Dockerfile, compose or s6 scripts after that are unverified until
+  Nicklas has built them there; say so rather than assuming they work.
+- The production installation is described in the newest review note. Its
+  `.env` and any `docker-compose.override.yml` live only on the server.
 - Code, comments and docs in this repository are in English.

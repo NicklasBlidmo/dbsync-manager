@@ -60,3 +60,101 @@ class SecretPropertyTests(SimpleTestCase):
             db.conn_info(),
             "host=db.example.org port=5433 dbname=gis user=ak_dbsync password='p\\'w d'",
         )
+
+
+# --- deployment helpers (review note 2026-09-21b) ---------------------------
+
+from django.conf import settings  # noqa: E402
+
+import generate_keys  # noqa: E402
+import preflight  # noqa: E402
+
+GOOD_ENV = {
+    "DJANGO_SECRET_KEY": "x" * 50,
+    "DBSYNC_MANAGER_SECRET_KEY": KEY_A,
+    "DATABASE_URL": "postgres://role:pw@192.0.2.10:5432/gis",
+}
+
+
+class GenerateKeysTests(SimpleTestCase):
+    VALUES = {"DJANGO_SECRET_KEY": "django-new", "DBSYNC_MANAGER_SECRET_KEY": "fernet-new"}
+
+    def test_generated_values_are_env_file_safe(self):
+        for value in generate_keys.new_values().values():
+            self.assertRegex(value, r"^[A-Za-z0-9_=-]+$")  # no $, #, quotes or spaces
+
+    def test_fernet_key_is_accepted_by_crypto(self):
+        with override_settings(DBSYNC_MANAGER_SECRET_KEY=generate_keys.fernet_key()):
+            self.assertEqual(crypto.decrypt(crypto.encrypt("x")), "x")
+
+    def test_fills_the_template_lines_in_place(self):
+        text = "A=1\nDJANGO_SECRET_KEY=\n# note\nDBSYNC_MANAGER_SECRET_KEY=\nB=2\n"
+        new, _ = generate_keys.fill_env_text(text, self.VALUES)
+        self.assertEqual(new, "A=1\nDJANGO_SECRET_KEY=django-new\n# note\nDBSYNC_MANAGER_SECRET_KEY=fernet-new\nB=2\n")
+
+    def test_duplicate_lines_collapse_and_keep_the_filled_value(self):
+        # The installation failure: keys pasted above the empty template lines.
+        text = "DJANGO_SECRET_KEY=pasted\nDJANGO_SECRET_KEY=\nDBSYNC_MANAGER_SECRET_KEY=\n"
+        new, report = generate_keys.fill_env_text(text, self.VALUES)
+        self.assertEqual(new.count("DJANGO_SECRET_KEY="), 1)
+        self.assertIn("DJANGO_SECRET_KEY=pasted\n", new)
+        self.assertIn("duplicate", report["DJANGO_SECRET_KEY"])
+
+    def test_existing_fernet_key_is_never_replaced_without_force(self):
+        text = "DJANGO_SECRET_KEY=a\nDBSYNC_MANAGER_SECRET_KEY=in-use\n"
+        new, report = generate_keys.fill_env_text(text, self.VALUES)
+        self.assertIn("DBSYNC_MANAGER_SECRET_KEY=in-use\n", new)
+        self.assertEqual(report["DBSYNC_MANAGER_SECRET_KEY"], "kept")
+        forced, _ = generate_keys.fill_env_text(text, self.VALUES, force=True)
+        self.assertIn("DBSYNC_MANAGER_SECRET_KEY=fernet-new\n", forced)
+
+    def test_missing_lines_are_appended(self):
+        new, _ = generate_keys.fill_env_text("A=1\n", self.VALUES)
+        self.assertTrue(new.endswith("DJANGO_SECRET_KEY=django-new\nDBSYNC_MANAGER_SECRET_KEY=fernet-new\n"))
+
+
+class PreflightEnvironmentTests(SimpleTestCase):
+    def problems(self, **changes):
+        return preflight.check_environment({**GOOD_ENV, **changes})
+
+    def test_good_environment_has_no_problems(self):
+        self.assertEqual(self.problems(), [])
+
+    def test_empty_key_is_named(self):
+        (problem,) = self.problems(DJANGO_SECRET_KEY="")
+        self.assertIn("DJANGO_SECRET_KEY is empty", problem)
+
+    def test_invalid_fernet_key(self):
+        (problem,) = self.problems(DBSYNC_MANAGER_SECRET_KEY="abc")
+        self.assertIn("not a valid Fernet key", problem)
+
+    def test_variable_name_pasted_into_value(self):
+        (problem,) = self.problems(DATABASE_URL="DATABASE_URL=postgres://r:p@h/db")
+        self.assertIn("pasted into the value", problem)
+
+    def test_localhost_is_explained_only_when_the_connection_fails(self):
+        # Valid with network_mode: host, so not a configuration error.
+        self.assertEqual(self.problems(DATABASE_URL="postgres://r:p@localhost:5432/db"), [])
+        line = preflight.explain_connection_error("connection refused", "r", "localhost", 5432, "db")
+        self.assertIn("container itself", line)
+
+    def test_unknown_time_zone(self):
+        (problem,) = self.problems(TZ="Europe/Stokholm")
+        self.assertIn("not a known time zone", problem)
+        self.assertEqual(self.problems(TZ="Europe/Stockholm"), [])
+
+    def test_auth_failure_mentions_missing_role(self):
+        line = preflight.explain_connection_error(
+            'FATAL:  password authentication failed for user "m"', "m", "h", 5432, "db"
+        )
+        self.assertIn("role that does not exist", line)
+
+
+class SettingsTests(SimpleTestCase):
+    def test_loopback_is_always_allowed(self):
+        for host in ("localhost", "127.0.0.1"):
+            self.assertIn(host, settings.ALLOWED_HOSTS)
+
+    def test_cookie_names_do_not_collide_with_other_django_apps(self):
+        self.assertNotEqual(settings.SESSION_COOKIE_NAME, "sessionid")
+        self.assertNotEqual(settings.CSRF_COOKIE_NAME, "csrftoken")

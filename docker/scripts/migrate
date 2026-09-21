@@ -1,4 +1,18 @@
 #!/command/with-contenv sh
-set -e
+# Preflight, then migrate. When either fails the container must stop (a
+# manager without a registry must not look alive), and the restart policy
+# starts it again. Without the pause that loop runs several times a second
+# and buries the one line that says what is wrong.
 cd /app
-exec s6-setuidgid manager python manage.py migrate --noinput
+# s6-setuidgid changes the user but not the environment; HOME would stay /root.
+export HOME=/home/manager
+delay="${DBSYNC_FAIL_DELAY:-30}"
+
+fail() {
+    echo "dbsync-manager: start aborted, see the line(s) above. Fix .env and run 'docker compose up -d'; retrying in ${delay}s."
+    sleep "$delay"
+    exit 1
+}
+
+s6-setuidgid manager python preflight.py || fail
+s6-setuidgid manager python manage.py migrate --noinput || fail

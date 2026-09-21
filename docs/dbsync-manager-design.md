@@ -728,16 +728,25 @@ Dockerfile           FROM lutraconsulting/mergin-db-sync:2.3.0
                      + pip install django htmx psycopg[binary] cryptography
                        mergin-client (already present) ...
                      + COPY manager/ /app
-                     ENTRYPOINT: migrate, collectstatic, start web + supervisor
+                     collectstatic at build; at start (s6-overlay):
+                     preflight → migrate → web + supervisor. Preflight
+                     is standalone Python (no Django import) that turns
+                     the first-installation mistakes into one line each
+                     and pauses before the restart policy retries.
 
 docker-compose.yml   services: manager (ports 8080, volume /data), postgis
                      (optional; most installations already have one)
 
-environment          DATABASE_URL           registry + default sync database
+environment          DATABASE_URL           registry database and role (§12);
+                                            sync databases are registry rows
                      DBSYNC_MANAGER_SECRET_KEY   Fernet key for stored secrets
                      DJANGO_SECRET_KEY
-                     ALLOWED_HOSTS
+                     ALLOWED_HOSTS          loopback is always added (healthcheck)
+                     BIND_IP, HTTP_PORT     host address and port (shared hosts)
+                     TZ                     one clock for every process in
+                                            the container; storage stays UTC
                      SMTP_*                  optional
+                     DBSYNC_DB_WAIT, DBSYNC_FAIL_DELAY   start-up behaviour
                      DBSYNC_TICK, DBSYNC_CHECK_INTERVAL   optional
                      DBSYNC_STUCK_AFTER (default 30 min)   "stuck" health rule
                      DBSYNC_LOG_MAX_MB (default 20), DBSYNC_LOG_KEEP (default 5)

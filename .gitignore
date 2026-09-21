@@ -3,6 +3,8 @@
 .env.*
 !.env.example
 /data/
+# per-server Compose overrides
+docker-compose.override.yml
 
 # python
 __pycache__/
