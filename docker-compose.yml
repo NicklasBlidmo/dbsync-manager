@@ -1,7 +1,14 @@
 # dbsync-manager: manager + optional PostGIS (design §10).
 #
-# Copy .env.example to .env and fill it in. Installations that already have
-# a PostGIS server delete the postgis service and point DATABASE_URL at it.
+# Copy .env.example to .env and fill it in.
+#
+# The postgis service is behind a profile, so it only exists when asked for:
+#   existing PostGIS server:  docker compose up -d
+#                             (DATABASE_URL points at your own server)
+#   bundled PostGIS:          docker compose --profile postgis up -d
+#                             (or COMPOSE_PROFILES=postgis in .env)
+# Nothing in this file needs editing for either case. Requires Docker
+# Compose 2.20+ for `required: false`.
 
 services:
   manager:
@@ -16,6 +23,9 @@ services:
     depends_on:
       postgis:
         condition: service_healthy
+        # Ignored when the postgis profile is not active, so the manager
+        # starts on its own against an external database.
+        required: false
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=5).status == 200 else 1)"]
       interval: 30s
@@ -25,10 +35,14 @@ services:
 
   postgis:
     image: postgis/postgis:16-3.4
+    profiles: ["postgis"]
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      # Not `:?`: Compose interpolates every service, also those in inactive
+      # profiles, so a hard requirement here would stop installations that
+      # use their own server. The image itself refuses an empty password.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
       POSTGRES_DB: ${POSTGRES_DB:-gis}
       # ICU collation so sorting is locale-correct regardless of the host
       POSTGRES_INITDB_ARGS: "--locale-provider=icu --icu-locale=sv-SE --encoding=UTF8"

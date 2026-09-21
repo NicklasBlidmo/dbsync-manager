@@ -979,6 +979,17 @@ Verified against db-sync 2.3.0 and the POC log (2026-09-16):
 
 Still open:
 
+- **Adopting an existing sync.** `add` with `init_from = gpkg` rejects
+  target schemas that already exist (§6 Operations, schema collisions). An
+  installation that already runs db-sync by hand can therefore only move
+  under the manager by re-init: stop the old daemon, drop the schemas, let
+  the manager init, run `post_init`. That is lossless for a Reader (one-way)
+  account but the views and grants are gone in between. Options: document
+  this as the takeover procedure, or add an "adopt" path that takes over the
+  existing checkout and trusts the version in the base schema comment. Must
+  be decided before the slice where the supervisor starts children (§14
+  slice 2). Until then, and always: two daemons must never sync the same
+  schemas.
 - Feature counts per table in the add wizard require downloading the
   GeoPackages. Acceptable as an explicit "preview" step, or skip in v1?
 - Should the "database edits cannot be pushed" configuration (§7) block

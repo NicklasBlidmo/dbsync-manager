@@ -69,6 +69,10 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    # Serves the collected static files (admin CSS/JS) from gunicorn. Without
+    # it the admin is unstyled whenever DJANGO_DEBUG is false, since Django
+    # only serves static files itself under runserver with DEBUG on.
+    "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -144,6 +148,12 @@ USE_TZ = True
 
 STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
+STORAGES = {
+    "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
+    # Compressed but not manifest-hashed: works without a collectstatic run
+    # in development and needs no manifest at start-up.
+    "staticfiles": {"BACKEND": "whitenoise.storage.CompressedStaticFilesStorage"},
+}
 
 
 # --- e-mail (design §6 alerts) --------------------------------------------

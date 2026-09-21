@@ -19,17 +19,34 @@ supervisor does not start db-sync yet.
 cp .env.example .env
 docker compose build
 docker compose run --rm --no-deps manager python manage.py generate_keys   # paste into .env
-docker compose up -d
+# edit .env: DATABASE_URL, ALLOWED_HOSTS
+docker compose up -d                      # existing PostGIS server
+# docker compose --profile postgis up -d  # or: bundled PostGIS
 docker compose exec manager python manage.py createsuperuser
 ```
 
 Open http://localhost:8080/ and log in. Add a Mergin account and a database
 under Registry before adding a project.
 
-Installations with an existing PostGIS server remove the `postgis` service
-from `docker-compose.yml` and point `DATABASE_URL` at their own. The role in
-`DATABASE_URL` owns the `dbsync_manager` schema and needs `CREATE` on the
-database; it is not the role syncs run as.
+### Database
+
+The `postgis` service is behind the Compose profile `postgis` and is not
+started by a plain `docker compose up`. Most installations already have a
+PostGIS server and point `DATABASE_URL` at it; from inside the container
+that is the server's LAN address or a shared Docker network, never
+`localhost`.
+
+The role in `DATABASE_URL` owns the `dbsync_manager` schema and nothing
+else; it is not the role syncs run as. Either give it `CREATE` on the
+database, or pre-create the schema and grant nothing more:
+
+```sql
+CREATE ROLE dbsync_manager LOGIN PASSWORD '...';
+CREATE SCHEMA dbsync_manager AUTHORIZATION dbsync_manager;
+```
+
+All manager tables, Django's own included, live in that schema. Nothing is
+created in `public` or in synced schemas.
 
 ## Layout
 
