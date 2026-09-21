@@ -1,0 +1,14 @@
+# secrets and runtime state
+.env
+.env.*
+/data/
+
+# python
+__pycache__/
+*.pyc
+.venv/
+
+# local editor state
+*.code-workspace
+.vscode/
+.idea/
