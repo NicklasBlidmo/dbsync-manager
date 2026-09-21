@@ -1,0 +1,6 @@
+#!/command/with-contenv sh
+# /data is a volume; on first start it is owned by root. The container's
+# services run as "manager" (design §12), so hand the top level over.
+set -e
+mkdir -p /data/projects
+chown manager:manager /data /data/projects

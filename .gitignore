@@ -1,12 +1,15 @@
 # secrets and runtime state
 .env
 .env.*
+!.env.example
 /data/
 
 # python
 __pycache__/
 *.pyc
 .venv/
+venv/
+manager/staticfiles/
 
 # local editor state
 *.code-workspace

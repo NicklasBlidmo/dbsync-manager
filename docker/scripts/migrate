@@ -1,0 +1,4 @@
+#!/command/with-contenv sh
+set -e
+cd /app
+exec s6-setuidgid manager python manage.py migrate --noinput

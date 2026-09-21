@@ -1,0 +1,45 @@
+# dbsync-manager: manager + optional PostGIS (design §10).
+#
+# Copy .env.example to .env and fill it in. Installations that already have
+# a PostGIS server delete the postgis service and point DATABASE_URL at it.
+
+services:
+  manager:
+    build: .
+    image: dbsync-manager:local
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "8080:8080"
+    volumes:
+      - data:/data
+    depends_on:
+      postgis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=5).status == 200 else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  postgis:
+    image: postgis/postgis:16-3.4
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-gis}
+      # ICU collation so sorting is locale-correct regardless of the host
+      POSTGRES_INITDB_ARGS: "--locale-provider=icu --icu-locale=sv-SE --encoding=UTF8"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-gis}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  data:
+  pgdata:

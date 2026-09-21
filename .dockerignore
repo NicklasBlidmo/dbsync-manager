@@ -1,0 +1,14 @@
+.git
+.gitignore
+.gitattributes
+.env
+.env.*
+docs/
+tools/
+*.md
+*.code-workspace
+**/__pycache__/
+**/*.pyc
+**/staticfiles/
+venv/
+.venv/

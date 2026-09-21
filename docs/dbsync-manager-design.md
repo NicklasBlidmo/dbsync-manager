@@ -184,8 +184,10 @@ events or captured hook output; hook output is masked before it is stored.
 mergin_account      id, name, url, username, secret_enc, kind (password|token),
                     created_by, created_at
 
-database            id, name, dsn_enc (host, port, dbname, user, password),
+database            id, name, host, port, dbname, user, password_enc,
                     created_by, created_at
+                    -- stored as components with only the password encrypted,
+                    -- so host, database and role are readable in the UI
 
 sync_project        id, mergin_project (workspace/name), mergin_project_id (uuid),
                     mergin_account_id, database_id,
@@ -355,7 +357,10 @@ no single "state" badge, because a single badge is what hid the incident.
    connection and write `sync_status`. The check uses the project's own
    `database` credentials, read-only (§3):
    - `server_version`: Mergin API `GET /v1/project/<ws>/<name>` → `version`.
-   - `local_version`: `.mergin/mergin.json` in the checkout.
+   - `local_version`: `.mergin/mergin.json` in the checkout. With the #163
+     patch each connection has its own checkout at
+     `<work_dir>/<project name>/<modified schema>/`, so this and
+     `gpkg_count` are read per connection, not per project.
    - `db_version`: the comment on the base schema (db-sync writes
      `{"name": ..., "version": "v123"}` there after each applied pull).
    - `gpkg_count`: `SELECT count(*)` per table via sqlite3 on the checkout's

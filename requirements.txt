@@ -1,0 +1,8 @@
+# Manager dependencies, installed on top of the db-sync image (design §10).
+# mergin-client, psycopg2 and dynaconf are already present in the base image.
+Django>=5.2,<5.3
+psycopg[binary]>=3.2
+cryptography>=43
+dj-database-url>=2.3
+gunicorn>=23
+PyYAML>=6
