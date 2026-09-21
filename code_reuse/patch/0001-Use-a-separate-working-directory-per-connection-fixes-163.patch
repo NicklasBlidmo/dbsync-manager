@@ -1,0 +1,128 @@
+From 7bdc180a079b91c9ae5ed0a39946d1cd41d68222 Mon Sep 17 00:00:00 2001
+From: Nicklas Blidmo <nicklas.blidmo@gmail.com>
+Date: Wed, 16 Sep 2026 14:13:51 +0000
+Subject: [PATCH] Use a separate working directory per connection (fixes #163)
+
+All connections to the same Mergin Maps project shared one local checkout
+(<working_dir>/<project>). The first connection to see a new server version
+pulled it - updating every GeoPackage in the checkout - but only computed and
+applied the changeset for its own sync file. The other connections then found
+local_version == server_version and returned without applying anything, so
+their changes silently never reached the database.
+
+Each connection now uses <working_dir>/<project>/<modified schema>. Existing
+installations re-download the checkout on the next start (init downloads the
+version recorded in the base schema and pulls forward from there); database
+schemas are unaffected.
+---
+ CHANGELOG.md  |  4 ++++
+ dbsync.py     | 35 +++++++++++++++++++----------------
+ docs/using.md |  4 ++++
+ 3 files changed, 27 insertions(+), 16 deletions(-)
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 15375ec..d162d5d 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -1,5 +1,9 @@
+ # Changelog
+ 
++## Unreleased
++
++- Fix loss of changes when several connections sync different GeoPackages of the same Mergin Maps project: each connection now uses its own working directory (`<working_dir>/<project>/<modified schema>`) instead of one shared checkout per project (#163). Existing installations re-download the project checkout on the next start; the database schemas are not affected.
++
+ ## 2.3.0
+ 
+ - Add `include_tables` connection option to sync only the listed tables (mutually exclusive with `skip_tables`)
+diff --git a/dbsync.py b/dbsync.py
+index 1214e21..30e0792 100644
+--- a/dbsync.py
++++ b/dbsync.py
+@@ -670,6 +670,21 @@ def revert_local_changes(
+     return leftovers
+ 
+ 
++def _get_work_dir(conn_cfg):
++    """Return the local working directory (project checkout) for a connection.
++
++    Each connection gets its own checkout of the Mergin Maps project, keyed on the
++    name of the 'modified' schema (unique per connection). Previously all connections
++    to the same project shared one checkout: the first connection to see a new server
++    version pulled it - updating *every* GeoPackage in the checkout - but only computed
++    and applied the changeset for its own sync file. The remaining connections then saw
++    local_version == server_version and did nothing, so their changes never reached
++    the database and no error was logged (see issue #163).
++    """
++    project_name = conn_cfg.mergin_project.split("/")[1]
++    return os.path.join(config.working_dir, project_name, conn_cfg.modified)
++
++
+ def pull(conn_cfg, mc):
+     """Downloads any changes from Mergin Maps and applies them to the database"""
+ 
+@@ -678,10 +693,7 @@ def pull(conn_cfg, mc):
+     include_tables = get_include_tables(conn_cfg)
+ 
+     project_name = conn_cfg.mergin_project.split("/")[1]
+-    work_dir = os.path.join(
+-        config.working_dir,
+-        project_name,
+-    )
++    work_dir = _get_work_dir(conn_cfg)
+     gpkg_full_path = os.path.join(
+         work_dir,
+         conn_cfg.sync_file,
+@@ -839,10 +851,7 @@ def status(conn_cfg, mc):
+ 
+     project_name = conn_cfg.mergin_project.split("/")[1]
+ 
+-    work_dir = os.path.join(
+-        config.working_dir,
+-        project_name,
+-    )
++    work_dir = _get_work_dir(conn_cfg)
+     gpkg_full_path = os.path.join(
+         work_dir,
+         conn_cfg.sync_file,
+@@ -951,10 +960,7 @@ def push(conn_cfg, mc):
+     if os.path.exists(tmp_changeset_file):
+         os.remove(tmp_changeset_file)
+ 
+-    work_dir = os.path.join(
+-        config.working_dir,
+-        project_name,
+-    )
++    work_dir = _get_work_dir(conn_cfg)
+     gpkg_full_path = os.path.join(
+         work_dir,
+         conn_cfg.sync_file,
+@@ -1081,10 +1087,7 @@ def init(
+         conn_cfg.modified,
+     )
+ 
+-    work_dir = os.path.join(
+-        config.working_dir,
+-        project_name,
+-    )
++    work_dir = _get_work_dir(conn_cfg)
+     gpkg_full_path = os.path.join(
+         work_dir,
+         conn_cfg.sync_file,
+diff --git a/docs/using.md b/docs/using.md
+index a058734..f44a18f 100644
+--- a/docs/using.md
++++ b/docs/using.md
+@@ -6,6 +6,10 @@ A single GeoPackage file in a Mergin Maps project is treated as an equivalent of
+ GeoPackage and a database schema can contain  multiple tables with data - and the DB Sync tool keeps
+ content of the tables in the database and in the GeoPackage the same.
+ 
++A project with several GeoPackage files needs one connection per file (see the `connections` list in the
++configuration). Each connection keeps its own local checkout of the project in
++`<working_dir>/<project name>/<modified schema>`.
++
+ There are two ways how the synchronization can be started:
+  1. Init from GeoPackage: if you have a Mergin Maps project with an existing GeoPackage, the tool will
+     create the destination schema and tables in the database (and populate those with data from GeoPackage).
+-- 
+2.43.0
+
