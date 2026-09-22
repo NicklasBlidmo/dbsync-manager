@@ -24,26 +24,28 @@
     </div>
   {% endfor %}
   {% if project.health == "ok" %}<p class="muted">No divergence detected (counts, versions). This is not a content verification (design §6).</p>{% endif %}
+  <p class="muted" style="margin:.2rem 0 0">Direction is assessed from the Mergin permission and from database roles that can write to the synced tables; superusers are not listed, since they can always write.</p>
 </div>
 
 <div class="grid">
 {% for status in statuses %}
   <div class="panel">
     <strong>{{ status.connection.sync_file }}</strong>
-    <span class="muted">→ {{ status.connection.modified_schema }} / {{ status.connection.base_schema }}</span>
+    <div class="schemas" title="modified: {{ status.connection.modified_schema }}&#10;base: {{ status.connection.base_schema }}">{{ status.connection.modified_schema }} / {{ status.connection.base_schema }}</div>
     <dl style="margin-top:.5rem">
       <dt>Versions</dt><dd>server {{ status.server_version|version }} · checkout {{ status.local_version|version }} · database {{ status.db_version|version }}
         {% if status.interrupted_pull %}<span class="badge warn">database behind checkout</span>{% endif %}</dd>
       <dt>Direction</dt><dd>{% if status.direction %}<span class="badge {{ status.direction|badge }}">{{ status.get_direction_display }}</span>{% else %}<span class="muted">unknown</span>{% endif %}
         <span class="muted">· Mergin permission: {{ status.mergin_permission|default:"unknown" }}
-        · other writers: {% if status.db_writers is None %}could not be determined{% elif status.db_writers %}{{ status.db_writers|join:", " }}{% else %}none found (superusers not listed){% endif %}</span></dd>
+        · other writers: {% if status.db_writers is None %}could not be determined{% elif status.db_writers %}{{ status.db_writers|join:", " }}{% else %}none found{% endif %}</span></dd>
       <dt>Checked</dt><dd>{% if status.checked_at %}{{ status.checked_at|date:"Y-m-d H:i:s" }}{% else %}never{% endif %}
         {% if status.last_pull_at %}<span class="muted">· last pull seen {{ status.last_pull_at|date:"Y-m-d H:i" }}</span>{% endif %}</dd>
       {% if status.check_error %}<dt>Check</dt><dd class="notice {% if not status.last_ok_check_at or status.last_ok_check_at != status.checked_at %}bad{% endif %}">{{ status.check_error }}</dd>{% endif %}
     </dl>
     {% if status.table_rows %}
+    <div class="scroll-x">
     <table style="margin-top:.5rem">
-      <thead><tr><th>Table</th><th class="num">GeoPackage</th><th class="num">Base</th><th class="num">Modified</th><th></th></tr></thead>
+      <thead><tr><th>Table</th><th class="num" title="rows in the GeoPackage">GPKG</th><th class="num" title="rows in the base schema">Base</th><th class="num" title="rows in the modified schema">Mod</th><th></th></tr></thead>
       <tbody>
       {% for row in status.table_rows %}
         <tr>
@@ -57,6 +59,7 @@
       {% endfor %}
       </tbody>
     </table>
+    </div>
     {% endif %}
   </div>
 {% empty %}

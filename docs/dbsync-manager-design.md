@@ -1002,8 +1002,10 @@ this order, each ending with its §13 integration test: (1) skeleton with
 registry, credentials and Docker image, Django admin as the UI (done
 2026-09-21); (2) supervisor start/stop/pause/resume with a project added
 via admin (done and field-tested with `p3922_test`, 2026-09-22); (3)
-consistency check, health and the project page (code 2026-09-22, field
-test pending); (4) add wizard (moved up
+consistency check, health and the project page (done and field-tested
+2026-09-22: eight connections at equal versions and counts, direction
+from the real permission and catalogue; `db_behind`, `stuck` and a Reader
+account not yet provoked on real data); (4) add wizard (moved up
 from last place on 2026-09-22, so no further project is added with
 hand-written schema names); (5) hooks and alerts; (6) remove and re-init
 as operations; (7) log history. The JSON API is added when `akdb project
