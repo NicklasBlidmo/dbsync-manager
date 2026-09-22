@@ -1004,12 +1004,13 @@ registry, credentials and Docker image, Django admin as the UI (done
 via admin (done and field-tested with `p3922_test`, 2026-09-22); (3)
 consistency check, health and the project page (done and field-tested
 2026-09-22: eight connections at equal versions and counts, direction
-from the real permission and catalogue; `db_behind`, `stuck` and a Reader
-account not yet provoked on real data); (4) add wizard (moved up
-from last place on 2026-09-22, so no further project is added with
-hand-written schema names; code 2026-09-22, field test pending: the
-Mergin workspace and project-list calls are exercised for the first
-time there); (5) hooks and alerts; (6) remove and re-init
+from the real permission and catalogue; `db_behind` and `stuck` provoked
+on the clone with the expected outcome; a Reader account still to be
+tested); (4) add wizard (moved up from last place on 2026-09-22, so no
+further project is added with hand-written schema names; done and
+field-tested 2026-09-22: workspace list, project search, file list and
+derived names against the real server, and the full db-tagged suite of
+86 tests green on the server); (5) hooks and alerts; (6) remove and re-init
 as operations; (7) log history. The JSON API is added when `akdb project
 close` needs it.
 v1.1: OIDC login; per-project notification channels beyond e-mail (webhook);
