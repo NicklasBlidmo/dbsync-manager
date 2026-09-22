@@ -9,9 +9,13 @@ Section numbers in code comments (§6, §8, ...) refer to it.
 
 ## Status
 
-Slice 1 of 6 (design §14): registry, encrypted credentials, Django admin as
-the UI, Docker image and compose file, supervisor process frame. The
-supervisor does not start db-sync yet.
+Slice 2 of 6 (design §14). The supervisor renders db-sync's config from the
+registry, starts one daemon per project with `desired_state = running`,
+stops it on `paused`, restarts it with backoff after a crash, and re-attaches
+to daemons left running by a previous supervisor. Projects are added in the
+Django admin (Registry → Sync projects, with their connections inline).
+Not yet: the consistency check and health, hooks, alerts, remove/re-init
+operations, the add wizard.
 
 ## Quick start
 
@@ -101,6 +105,23 @@ cd manager
 export DJANGO_SECRET_KEY=dev DBSYNC_MANAGER_SECRET_KEY=$(python -c "from cryptography.fernet import Fernet;print(Fernet.generate_key().decode())")
 export DATABASE_URL=postgres://postgres:postgres@localhost:5432/gis
 python manage.py check
-python manage.py test registry        # unit tests, no database needed
+python manage.py test --exclude-tag=db   # unit tests, no database needed
 python manage.py migrate && python manage.py runserver
+```
+
+Database-backed tests (tagged `db`) run against a throwaway PostGIS with a
+non-superuser role, on a machine with Docker:
+
+```sh
+docker compose --profile test run --rm test
+```
+
+## Per-project files under /data
+
+```
+/data/projects/<id>/config.yaml        generated from the registry, mode 600
+/data/projects/<id>/dbsync.log         db-sync's --log-file (INFO), rotated
+/data/projects/<id>/dbsync.stderr.log  everything db-sync writes to stderr, rotated
+/data/projects/<id>/dbsync.pid         pid + config path, used to re-attach
+/data/projects/<id>/work/<project>/<modified schema>/   the checkout (#163 patch)
 ```

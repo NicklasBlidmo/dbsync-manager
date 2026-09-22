@@ -284,6 +284,22 @@ starting children, so every project has exactly one owner at any time. The
 web server never starts or signals children; it only writes `desired_state`
 and events, which the supervisor picks up on the next tick.
 
+If s6 restarts only the supervisor (it crashed, the container did not),
+the daemons it started are reparented, not killed. On start the supervisor
+therefore re-attaches to them through each project's pidfile, accepting a
+pid only if `/proc/<pid>/cmdline` names that project's config file, so a
+recycled pid is never mistaken for a daemon. This is what keeps "two
+daemons never sync the same schemas" true across supervisor restarts.
+
+Each daemon is started with `--log-file <work dir>/dbsync.log
+--log-verbosity INFO`; its stdout (one timestamp per cycle) is discarded
+and its stderr (every record at DEBUG, plus any traceback that escapes the
+daemon) goes to `dbsync.stderr.log`. The last stderr lines are copied into
+the crash event and `process_reason`, which is how a start-up failure
+(wrong credentials, schema conflict) becomes readable in the UI. Both files
+are rotated by copy-and-truncate, since db-sync appends and never reopens
+its log.
+
 ### State model
 
 A project has three independent state fields, each with exactly one writer:
@@ -337,8 +353,12 @@ no single "state" badge, because a single badge is what hid the incident.
    is missing or a post_init hook has not yet succeeded, else `running`.
    Blocked means: an operation is open; or a post_init hook is configured,
    every base schema comment exists and `post_init_ok_at` is null (the hook
-   failed or has not run); or the previous start failed on credentials
-   (`process_reason` set, cleared when the credentials row is edited).
+   failed or has not run); or the config cannot be rendered: no
+   connections, a stored secret that no longer decrypts, an API token
+   account (db-sync 2.3.0 logs in with a password only), or a secret
+   starting with `@`, which db-sync's config parser would rewrite. The
+   render is retried every tick, so editing the offending row unblocks the
+   project without further action.
 2. **Stop.** For each project with `desired_state` paused or removed and a
    live child: SIGTERM, `process_state = stopping`, wait up to 60 s, then
    SIGKILL; `stopped`.
@@ -956,8 +976,9 @@ What carries over from the POC, and what does not:
 
 v1: everything above except SSO and the CLI, built in vertical slices in
 this order, each ending with its §13 integration test: (1) skeleton with
-registry, credentials and Docker image, Django admin as the UI; (2)
-supervisor start/stop/pause/resume with a project added via admin; (3)
+registry, credentials and Docker image, Django admin as the UI (done
+2026-09-21); (2) supervisor start/stop/pause/resume with a project added
+via admin (code 2026-09-22, field test pending with `p3922_test`); (3)
 consistency check, health and the project page; (4) hooks and alerts; (5)
 remove and re-init as operations; (6) add wizard and log history. The JSON
 API is added when `akdb project close` needs it.

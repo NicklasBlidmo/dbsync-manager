@@ -35,6 +35,13 @@ Invariants learned the hard way:
   traceback in a tight restart loop. New failure modes found in the field go
   into `preflight.py` with a test.
 - s6-setuidgid does not set HOME; every service script exports it.
+- The supervisor re-attaches to daemons a previous supervisor left running
+  (pidfile + /proc cmdline check, `supervisor/processes.py`). Never start a
+  second daemon for a project whose pidfile process is alive.
+- db-sync's config parser (dynaconf) rewrites values that start with `@`.
+  The config renderer refuses such secrets; do not "fix" that by quoting.
+- db-sync 2.3.0 logs in with username and password only; API token accounts
+  render as `blocked` with the reason, not as a crash loop.
 - The first production target already runs a live, hand-configured db-sync
   against the same database. Two daemons must never sync the same schemas.
   Order decided 2026-09-22 (design §15): the Bönsta clone `p3922_test` is the

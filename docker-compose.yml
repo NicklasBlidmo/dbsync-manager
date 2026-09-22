@@ -56,6 +56,43 @@ services:
       timeout: 5s
       retries: 10
 
+  # --- database-backed tests (design §13): docker compose --profile test run --rm test
+  postgis-test:
+    image: postgis/postgis:16-3.4
+    profiles: ["test"]
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: test
+      POSTGRES_DB: postgres
+    volumes:
+      - ./docker/test/init.sql:/docker-entrypoint-initdb.d/10-manager-test.sql:ro
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  test:
+    build: .
+    image: dbsync-manager:local
+    profiles: ["test"]
+    user: manager
+    working_dir: /app
+    # Bypasses the s6 entrypoint (which would run migrate) and runs the whole
+    # suite, including the `db`-tagged tests, against postgis-test as the
+    # non-superuser role manager_test.
+    entrypoint: ["python", "manage.py", "test", "--noinput"]
+    environment:
+      DJANGO_SECRET_KEY: test-only
+      DBSYNC_MANAGER_SECRET_KEY: ZGJzeW5jLW1hbmFnZXItdGVzdC1vbmx5LWtleS0wMzI=
+      DATABASE_URL: postgres://manager_test:test@postgis-test:5432/manager_test
+      DBSYNC_DATA_DIR: /tmp/dbsync-test
+    depends_on:
+      postgis-test:
+        condition: service_healthy
+
 volumes:
   data:
   pgdata:

@@ -261,10 +261,11 @@ class SyncConnection(models.Model):
 
     @property
     def checkout_dir(self):
-        """With the #163 patch each connection has its own checkout:
-        <work_dir>/<project name>/<modified schema>."""
+        """With the #163 patch each connection has its own checkout under
+        db-sync's working_dir: <work_dir>/work/<project name>/<modified schema>
+        (supervisor.config_render.WORKING_SUBDIR)."""
         project_name = self.project.mergin_project.split("/", 1)[-1]
-        return self.project.work_dir / project_name / self.modified_schema
+        return self.project.work_dir / "work" / project_name / self.modified_schema
 
 
 # --- observations (§5, §6) --------------------------------------------------
