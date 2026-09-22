@@ -202,6 +202,8 @@ sync_project        id, mergin_project (workspace/name), mergin_project_id (uuid
                                        -- both written by the supervisor only
                     health (unknown|ok|catching_up|stale|behind|diverged|stuck),
                     health_since,      -- written by the consistency check only
+                    active_conditions (jsonb: condition key -> since),
+                                       -- the alert de-duplication state (§6)
                     post_init_hook_id, pre_remove_hook_id, post_pull_hook_id,
                     post_init_ok_at,   -- null until the post_init hook has
                                        -- succeeded; see §8
@@ -488,7 +490,16 @@ no single "state" badge, because a single badge is what hid the incident.
    Alert de-duplication: an e-mail is sent when a `condition` first becomes
    active for a project, and a "resolved" e-mail when a later check no longer
    raises it. While it stays active nothing more is sent; the project page
-   shows how long it has been active.
+   shows how long it has been active. The active set lives in
+   `sync_project.active_conditions` (key → time it became active); the
+   check owns the keys it computes, the supervisor owns `process_crashed`.
+   Condition keys carry the connection's file name, e.g.
+   `db_behind:1-punkter.gpkg`, `divergence:1-punkter.gpkg:<table>`.
+
+   The check runs inside the supervisor's tick, synchronously, one API call
+   and one database connection per project. With tens of projects that is
+   seconds per check interval, which is fine; a threaded check is a
+   later optimisation, not a design change.
 
 6. If a `post_pull` hook is configured and `db_version` has advanced since
    the last check, run it once (§8).
@@ -621,8 +632,12 @@ labelled as an assessment:
    Writer or Owner means it can.
 2. **Database writers**: roles other than the sync role that can INSERT,
    UPDATE or DELETE on any table in the modified schemas. This is inspected
-   with `has_table_privilege(role, table, 'INSERT')` etc. for every role in
-   `pg_roles` plus `PUBLIC`, and includes table owners and superusers.
+   with `has_table_privilege(role, table, 'INSERT')` etc. for every login
+   role in `pg_roles`, which sees ownership and inherited grants, plus
+   `PUBLIC` through the tables' ACLs (since `has_table_privilege` cannot
+   name PUBLIC). Superusers are left out on purpose: they can always write,
+   so listing them would make "one-way" unreachable on every installation;
+   the page says so next to the list.
    `information_schema.role_table_grants` is *not* used: it omits privileges
    granted to PUBLIC and shows only grants visible to the current role, so it
    cannot establish that nobody else can write.
@@ -987,7 +1002,8 @@ this order, each ending with its §13 integration test: (1) skeleton with
 registry, credentials and Docker image, Django admin as the UI (done
 2026-09-21); (2) supervisor start/stop/pause/resume with a project added
 via admin (done and field-tested with `p3922_test`, 2026-09-22); (3)
-consistency check, health and the project page; (4) add wizard (moved up
+consistency check, health and the project page (code 2026-09-22, field
+test pending); (4) add wizard (moved up
 from last place on 2026-09-22, so no further project is added with
 hand-written schema names); (5) hooks and alerts; (6) remove and re-init
 as operations; (7) log history. The JSON API is added when `akdb project

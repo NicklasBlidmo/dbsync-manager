@@ -9,13 +9,19 @@ Section numbers in code comments (§6, §8, ...) refer to it.
 
 ## Status
 
-Slice 2 of 6 (design §14). The supervisor renders db-sync's config from the
+Slice 3 of 7 (design §14). The supervisor renders db-sync's config from the
 registry, starts one daemon per project with `desired_state = running`,
-stops it on `paused`, restarts it with backoff after a crash, and re-attaches
-to daemons left running by a previous supervisor. Projects are added in the
-Django admin (Registry → Sync projects, with their connections inline).
-Not yet: the consistency check and health, hooks, alerts, remove/re-init
-operations, the add wizard.
+stops it on `paused`, restarts it with backoff after a crash, re-attaches to
+daemons left running by a previous supervisor, and every `DBSYNC_CHECK_INTERVAL`
+runs the consistency check: server, checkout and database versions, row
+counts GeoPackage vs base vs modified, Mergin permission and database
+writers, from which it derives `health` and the alert conditions (design §6).
+The web UI at `/` shows every project with its three badges (desired,
+process, health) and a project page with status per GeoPackage, direction
+facts, live log tail, events and pause/resume. Projects are still added in
+the Django admin (Registry → Sync projects, with their connections inline).
+Not yet: the add wizard, hooks, e-mail alerts, remove/re-init operations,
+log history.
 
 ## Quick start
 
@@ -32,7 +38,9 @@ docker compose exec manager python manage.py createsuperuser
 
 Open `http://<ALLOWED_HOSTS entry>:<HTTP_PORT>/` and log in with the account
 you just created; there are no default credentials. Add a Mergin account and
-a database under Registry before adding a project.
+a database under Settings (admin) → Registry before adding a project. Users
+in the `viewer` group see everything; `operator` can pause and resume;
+`admin` manages credentials and users. Staff users get the admin link.
 
 No Python on the host? Generate the keys with the image instead, bypassing
 its entrypoint (which would run migrate first), and paste the two values
@@ -90,7 +98,8 @@ manager/              Django project
   generate_keys.py    standalone key generator (no Django needed)
   preflight.py        start-up checks with one-line messages
   registry/           data model (§5), crypto (§4), admin, groups (§4)
-  supervisor/         `manage.py supervise` (§6)
+  supervisor/         `manage.py supervise` (§6): processes, config, check, health
+  ui/                 HTMX pages (§9): projects, project page, login
 patches/              applied to db-sync at image build (#163)
 tools/                check_sync.sh, standalone cron check without the manager
 docs/                 design document

@@ -1,0 +1,404 @@
+"""
+The consistency check (design §6 step 5) and health (§6 State model).
+
+`gather()` collects facts with I/O: the Mergin API, the checkout, the
+GeoPackage and the sync database (with the sync's own credentials, §3).
+`evaluate()` is pure: given the previous status row and the observation it
+sets the new row, the per-connection health and the active conditions.
+`run_project_check()` ties them together for one project.
+
+What the sources mean and why the rules look like this is spelled out in
+§6; the short version, verified against db-sync 2.3.0: the checkout is
+pulled first, base then modified are applied, and the base schema comment
+is written last, so `db_version < local_version` that persists is an
+interrupted pull, GeoPackage vs base catches base falling behind, and
+modified vs base is either user edits (fine in two-way) or the remains of
+a half-applied pull (when db_version is behind).
+"""
+
+import json
+import logging
+import sqlite3
+from contextlib import closing
+from dataclasses import dataclass, field
+from datetime import timedelta
+from pathlib import Path
+
+from django.conf import settings
+from django.utils import timezone
+
+from registry.models import SyncProject, SyncStatus
+
+from . import dbinspect, mergin_api
+
+log = logging.getLogger("supervisor.check")
+
+Health = SyncProject.Health
+Direction = SyncStatus.Direction
+
+HEALTH_ORDER = [Health.DIVERGED, Health.BEHIND, Health.STUCK, Health.STALE, Health.UNKNOWN, Health.CATCHING_UP, Health.OK]
+
+# Key in mismatch_streak that counts consecutive checks with modified != base
+# while versions are equal (the stranded-edits rule); table names cannot
+# start with "_" in a GeoPackage created by QGIS, and it saves a column.
+PENDING_KEY = "_modified_vs_base"
+
+
+@dataclass
+class Observed:
+    server_version: int | None = None
+    local_version: int | None = None
+    db_version: int | None = None
+    gpkg_count: dict = field(default_factory=dict)
+    base_count: dict = field(default_factory=dict)
+    modified_count: dict = field(default_factory=dict)
+    mergin_permission: str | None = None
+    db_writers: list = field(default_factory=list)
+    error: str = ""
+
+
+# --- gathering (I/O) ---------------------------------------------------------
+
+
+def local_version_of(checkout_dir) -> int | None:
+    """Version from .mergin/mergin.json in a connection's checkout."""
+    path = Path(checkout_dir) / ".mergin" / "mergin.json"
+    with open(path, encoding="utf-8") as handle:
+        data = json.load(handle)
+    return dbinspect.parse_version(data.get("version"))
+
+
+def _sqlite_ro(gpkg_path):
+    # closing(): sqlite3's own context manager commits, it does not close.
+    return closing(sqlite3.connect(f"file:{Path(gpkg_path).as_posix()}?mode=ro", uri=True))
+
+
+def gpkg_tables(gpkg_path) -> list:
+    """Feature and attribute tables registered in the GeoPackage."""
+    with _sqlite_ro(gpkg_path) as conn:
+        rows = conn.execute(
+            "SELECT table_name FROM gpkg_contents WHERE data_type IN ('features', 'attributes') ORDER BY 1"
+        ).fetchall()
+    return [row[0] for row in rows]
+
+
+def gpkg_counts(gpkg_path, tables) -> dict:
+    counts = {}
+    with _sqlite_ro(gpkg_path) as conn:
+        for table in tables:
+            quoted = '"' + table.replace('"', '""') + '"'
+            counts[table] = conn.execute(f"SELECT count(*) FROM {quoted}").fetchone()[0]
+    return counts
+
+
+def select_tables(tables, skip, include) -> list:
+    if include:
+        return [t for t in tables if t in include]
+    if skip:
+        return [t for t in tables if t not in skip]
+    return list(tables)
+
+
+def db_counts(cursor, schema, tables) -> dict:
+    """count(*) per table that exists in `schema`; missing tables are absent from the result."""
+    cursor.execute(
+        "SELECT table_name FROM information_schema.tables WHERE table_schema = %s AND table_type = 'BASE TABLE'",
+        [schema],
+    )
+    existing = {row[0] for row in cursor.fetchall()}
+    counts = {}
+    for table in tables:
+        if table not in existing:
+            continue
+        quoted_schema = '"' + schema.replace('"', '""') + '"'
+        quoted = '"' + table.replace('"', '""') + '"'
+        cursor.execute(f"SELECT count(*) FROM {quoted_schema}.{quoted}")
+        counts[table] = cursor.fetchone()[0]
+    return counts
+
+
+WRITERS_SQL = """
+WITH tables AS (
+    SELECT c.oid, c.relname
+    FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = %(schema)s AND c.relkind IN ('r', 'p')
+),
+roles AS (
+    SELECT rolname FROM pg_roles
+    WHERE rolname <> %(sync_role)s AND rolname NOT LIKE 'pg\\_%%' AND NOT rolsuper
+)
+SELECT DISTINCT r.rolname
+FROM roles r CROSS JOIN tables t
+WHERE has_table_privilege(r.rolname, t.oid, 'INSERT')
+   OR has_table_privilege(r.rolname, t.oid, 'UPDATE')
+   OR has_table_privilege(r.rolname, t.oid, 'DELETE')
+UNION
+SELECT 'PUBLIC'
+FROM tables t, aclexplode(COALESCE((SELECT relacl FROM pg_class WHERE oid = t.oid), '{}'::aclitem[])) a
+WHERE a.grantee = 0 AND a.privilege_type IN ('INSERT', 'UPDATE', 'DELETE')
+ORDER BY 1
+"""
+
+
+def db_writers(cursor, schema, sync_role) -> list:
+    """Roles other than the sync role that can write to any table in `schema`.
+
+    has_table_privilege() sees ownership and inherited grants. Superusers are
+    left out: they can always write, and listing them would make "one-way"
+    unreachable on every installation (§7 note). PUBLIC is included through
+    the ACL, since has_table_privilege() cannot name it.
+    """
+    cursor.execute(WRITERS_SQL, {"schema": schema, "sync_role": sync_role})
+    return [row[0] for row in cursor.fetchall()]
+
+
+def gather(project, connections) -> dict:
+    """Observed per connection id. One API call and one DB connection per project."""
+    observed = {conn.pk: Observed() for conn in connections}
+    if not connections:
+        return observed
+
+    # Mergin: server version and permission (project-wide).
+    server_version = permission = None
+    api_error = ""
+    try:
+        info = mergin_api.project_info(project.mergin_account, project.mergin_project)
+        server_version = mergin_api.version_number(info)
+        permission = mergin_api.permission(info)
+        if server_version is None:
+            api_error = "Mergin API returned no version"
+    except Exception as exc:  # noqa: BLE001 - reported in check_error
+        api_error = f"Mergin API: {exc}"
+
+    # Database: comments, counts, writers (one connection).
+    db_error = ""
+    comments = {}
+    db_counts_by_conn = {}
+    writers_by_conn = {}
+    tables_by_conn = {}
+    gpkg_error_by_conn = {}
+    for conn in connections:
+        checkout = conn.checkout_dir
+        obs = observed[conn.pk]
+        try:
+            obs.local_version = local_version_of(checkout)
+            gpkg_path = checkout / conn.sync_file
+            tables = select_tables(gpkg_tables(gpkg_path), conn.skip_tables, conn.include_tables)
+            tables_by_conn[conn.pk] = tables
+            obs.gpkg_count = gpkg_counts(gpkg_path, tables)
+        except Exception as exc:  # noqa: BLE001
+            gpkg_error_by_conn[conn.pk] = f"checkout: {exc}"
+
+    try:
+        with dbinspect.connect(project.database) as db, db.cursor() as cursor:
+            comments = dbinspect.base_schema_comments(project.database, [c.base_schema for c in connections])
+            for conn in connections:
+                tables = tables_by_conn.get(conn.pk, [])
+                db_counts_by_conn[conn.pk] = (
+                    db_counts(cursor, conn.base_schema, tables),
+                    db_counts(cursor, conn.modified_schema, tables),
+                )
+                writers_by_conn[conn.pk] = db_writers(cursor, conn.modified_schema, project.database.user)
+    except Exception as exc:  # noqa: BLE001
+        db_error = f"database: {exc}"
+
+    for conn in connections:
+        obs = observed[conn.pk]
+        errors = [e for e in (api_error, db_error, gpkg_error_by_conn.get(conn.pk, "")) if e]
+        obs.server_version = server_version
+        obs.mergin_permission = permission
+        comment = comments.get(conn.base_schema) or {}
+        obs.db_version = dbinspect.parse_version(comment.get("version"))
+        base, modified = db_counts_by_conn.get(conn.pk, ({}, {}))
+        obs.base_count, obs.modified_count = base, modified
+        obs.db_writers = writers_by_conn.get(conn.pk, [])
+        if not errors and obs.db_version is None:
+            errors.append(f"base schema {conn.base_schema} has no db-sync comment yet")
+        obs.error = "; ".join(errors)
+    return observed
+
+
+# --- evaluation (pure) -------------------------------------------------------
+
+
+def direction_of(permission, writers):
+    if permission in ("writer", "owner"):
+        return Direction.TWO_WAY
+    if permission == "reader":
+        return Direction.DB_EDITS_CANNOT_PUSH if writers else Direction.ONE_WAY
+    return None
+
+
+def evaluate(status, obs, *, now, check_interval, stuck_after, process_running, label):
+    """Update `status` in place from `obs`; return (health, conditions, messages).
+
+    `label` names the connection in condition keys (its sync_file).
+    `process_running` is the supervisor's view; the stuck rule needs it.
+    Nothing here touches the database; the caller saves `status`.
+    """
+    conditions = set()
+    messages = {}
+    status.checked_at = now
+
+    if obs.error:
+        status.check_error = obs.error
+        last_ok = status.last_ok_check_at
+        if last_ok is None:
+            return Health.UNKNOWN, conditions, messages
+        if now - last_ok > timedelta(seconds=3 * check_interval):
+            conditions.add("check_failed")
+            messages["check_failed"] = f"consistency check has been failing since {last_ok:%Y-%m-%d %H:%M}: {obs.error}"
+            return Health.STALE, conditions, messages
+        # A recent good check exists: keep what it said.
+        return None, conditions, messages
+
+    status.check_error = ""
+    status.last_ok_check_at = now
+
+    previous_local = status.local_version
+    if obs.local_version != previous_local or status.local_version_changed_at is None:
+        status.local_version_changed_at = now
+    local_moved_now = status.local_version_changed_at == now and previous_local is not None
+
+    if status.db_version is not None and obs.db_version is not None and obs.db_version > status.db_version:
+        status.last_pull_at = now
+
+    status.server_version = obs.server_version
+    status.local_version = obs.local_version
+    status.db_version = obs.db_version
+    status.gpkg_count = dict(obs.gpkg_count)
+    status.base_count = dict(obs.base_count)
+    status.modified_count = dict(obs.modified_count)
+    status.mergin_permission = obs.mergin_permission
+    status.db_writers = list(obs.db_writers)
+    status.direction = direction_of(obs.mergin_permission, obs.db_writers)
+
+    versions_equal = obs.local_version is not None and obs.local_version == obs.db_version
+    streaks = dict(status.mismatch_streak or {})
+
+    # GeoPackage vs base, per table, only when versions agree (§6).
+    for table, gpkg_n in obs.gpkg_count.items():
+        base_n = obs.base_count.get(table)
+        if versions_equal and base_n is not None and gpkg_n != base_n:
+            streaks[table] = streaks.get(table, 0) + 1
+        else:
+            streaks[table] = 0
+        if streaks[table] >= 2:
+            key = f"divergence:{label}:{table}"
+            conditions.add(key)
+            messages[key] = (
+                f"{label}: table {table} has {gpkg_n} rows in the GeoPackage but {base_n} in the base "
+                f"schema for {streaks[table]} checks at version v{obs.local_version}"
+            )
+    for table in list(streaks):
+        if table != PENDING_KEY and table not in obs.gpkg_count:
+            del streaks[table]
+
+    # Modified vs base while versions agree: pending database edits.
+    pending_tables = [t for t in obs.modified_count if obs.base_count.get(t) is not None and obs.modified_count[t] != obs.base_count[t]]
+    if versions_equal and pending_tables:
+        streaks[PENDING_KEY] = streaks.get(PENDING_KEY, 0) + 1
+    else:
+        streaks[PENDING_KEY] = 0
+    status.mismatch_streak = streaks
+
+    # Interrupted pull: db_version behind local_version for too long.
+    behind = obs.db_version is not None and obs.local_version is not None and obs.db_version < obs.local_version
+    if behind and now - status.local_version_changed_at > timedelta(seconds=2 * check_interval):
+        key = f"db_behind:{label}"
+        conditions.add(key)
+        detail = ""
+        differing = [t for t in obs.modified_count if obs.base_count.get(t) is not None and obs.modified_count[t] != obs.base_count[t]]
+        if differing:
+            detail = "; interrupted pull: database differences in " + ", ".join(differing) + " are not user edits and must not be pushed"
+        messages[key] = (
+            f"{label}: database is at v{obs.db_version} while the checkout is at v{obs.local_version} "
+            f"since {status.local_version_changed_at:%Y-%m-%d %H:%M}{detail}"
+        )
+
+    # Stranded edits: Reader account, other writers, real pending edits.
+    if status.direction == Direction.DB_EDITS_CANNOT_PUSH and streaks[PENDING_KEY] >= 2:
+        key = f"stranded_db_edits:{label}"
+        conditions.add(key)
+        messages[key] = (
+            f"{label}: database edits in {', '.join(pending_tables)} can never be pushed "
+            f"(account is Reader; writers: {', '.join(obs.db_writers)})"
+        )
+
+    # Stuck: server ahead, checkout not moving, daemon alive.
+    server_ahead = obs.server_version is not None and obs.local_version is not None and obs.server_version > obs.local_version
+    stuck = (
+        server_ahead
+        and process_running
+        and now - status.local_version_changed_at > timedelta(seconds=stuck_after)
+    )
+    if stuck:
+        conditions.add("stuck")
+        messages["stuck"] = (
+            f"{label}: server is at v{obs.server_version}, checkout still at v{obs.local_version} "
+            f"since {status.local_version_changed_at:%Y-%m-%d %H:%M} while db-sync is running"
+        )
+
+    if any(k.startswith(("divergence:", "stranded_db_edits:")) for k in conditions):
+        health = Health.DIVERGED
+    elif any(k.startswith("db_behind:") for k in conditions):
+        health = Health.BEHIND
+    elif stuck:
+        health = Health.STUCK
+    elif server_ahead and local_moved_now:
+        health = Health.CATCHING_UP
+    elif server_ahead:
+        # Ahead but not yet stuck for long enough; still catching up in effect.
+        health = Health.CATCHING_UP
+    elif behind:
+        # Behind but within the pull window: not alarming yet.
+        health = Health.CATCHING_UP
+    else:
+        health = Health.OK
+    return health, conditions, messages
+
+
+def worst(healths):
+    healths = [h for h in healths if h]
+    if not healths:
+        return Health.UNKNOWN
+    return min(healths, key=HEALTH_ORDER.index)
+
+
+# --- per project -------------------------------------------------------------
+
+
+def run_project_check(project, *, process_running: bool, now=None):
+    """Gather, evaluate and save for every connection. Returns (health, conditions, messages)."""
+    now = now or timezone.now()
+    connections = list(project.connections.all())
+    observed = gather(project, connections)
+
+    healths = []
+    conditions = set()
+    messages = {}
+    for conn in connections:
+        status, _ = SyncStatus.objects.get_or_create(connection=conn, defaults={"project": project})
+        previous_health = getattr(status, "_health", None)
+        health, conds, msgs = evaluate(
+            status,
+            observed[conn.pk],
+            now=now,
+            check_interval=settings.DBSYNC_CHECK_INTERVAL,
+            stuck_after=settings.DBSYNC_STUCK_AFTER,
+            process_running=process_running,
+            label=conn.sync_file,
+        )
+        status.save()
+        if health is None:
+            health = project.health if project.health != Health.UNKNOWN else previous_health
+        healths.append(health)
+        conditions |= conds
+        messages.update(msgs)
+
+    health = worst(healths)
+    if health != project.health:
+        SyncProject.objects.filter(pk=project.pk).update(health=health, health_since=now)
+        project.health = health
+        project.health_since = now
+    return health, conditions, messages

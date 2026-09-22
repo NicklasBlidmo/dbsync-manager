@@ -1,14 +1,16 @@
 """
 The supervisor loop (design §6).
 
-Slice 2: loop steps 1–3 (start, stop, exit with backoff), the
+Slices 2–3: loop steps 1–3 (start, stop, exit with backoff), the
 initializing → running transition from the base schema comments, log
-rotation, and adoption of daemons left running by a previous supervisor.
-Operations (step 0), the post_init hook (step 4), the consistency check
-(step 5) and post_pull (step 6) come in later slices.
+rotation, adoption of daemons left running by a previous supervisor, and
+step 5, the consistency check with health and alert conditions.
+Operations (step 0), the post_init hook (step 4) and post_pull (step 6)
+come in later slices.
 
 One writer per state field (§6 State model): this module writes
-`process_state` and `process_reason`, never `desired_state` or `health`.
+`process_state` and `process_reason`; the check (check.py) writes
+`health`; nothing here writes `desired_state`.
 """
 
 import logging
@@ -24,9 +26,9 @@ from django.utils import timezone
 
 from registry import events
 from registry.crypto import SecretError
-from registry.models import SyncProject
+from registry.models import Event, SyncProject
 
-from . import dbinspect, processes
+from . import check, conditions, dbinspect, processes
 from .config_render import ConfigRenderError, render_config, write_config
 from .logs import rotate_if_needed, tail
 
@@ -59,10 +61,14 @@ class Runtime:
 
     child: processes.Child | None = None
     stopping_since: float | None = None
+    restart_requested: bool = False   # set by the stuck rule; one restart, not a crash
+    restarting: bool = False
     crashes: int = 0
     next_start_at: float = 0.0
     last_start_at: float = 0.0
     blocked_reason: str = ""
+    last_check_at: float = 0.0
+    stuck_restart_at: float | None = None
 
 
 class Supervisor:
@@ -209,8 +215,14 @@ class Supervisor:
         if wants_running:
             if rt.child is None:
                 if now < rt.next_start_at:
-                    return  # crashed, waiting out the backoff
-                self._start(project, rt, now)
+                    pass  # crashed, waiting out the backoff
+                else:
+                    self._start(project, rt, now)
+            elif rt.restart_requested:
+                rt.restart_requested = False
+                rt.restarting = True
+                rt.child.terminate()
+                log.info("restarting db-sync for %s (pid %s)", project, rt.child.pid)
             else:
                 self._observe(project, rt)
         else:
@@ -218,6 +230,8 @@ class Supervisor:
                 self._stop(project, rt, now)
             elif project.process_state != PS.STOPPED:
                 self._set_state(project, PS.STOPPED, "")
+
+        self._maybe_check(project, rt, now)
 
     # --- step 1: start -------------------------------------------------------
 
@@ -277,7 +291,7 @@ class Supervisor:
         if project.process_state == PS.INITIALIZING:
             state, reason = self._initial_state(project)
             if state == PS.RUNNING:
-                # Slice 4 inserts the post_init hook here (§6 step 4).
+                # Slice 5 inserts the post_init hook here (§6 step 4).
                 self._set_state(project, PS.RUNNING, "")
                 events.info(project, "initialised: every base schema has db-sync's comment")
             elif reason != project.process_reason:
@@ -314,6 +328,12 @@ class Supervisor:
             log.info("db-sync for %s stopped", project)
             return
 
+        if rt.restarting:
+            rt.restarting = False
+            self._set_state(project, PS.STOPPED, "restarting")
+            events.info(project, f"db-sync stopped for restart (pid {child.pid})")
+            return
+
         if now - rt.last_start_at >= STABLE_UPTIME:
             rt.crashes = 0
         rt.crashes += 1
@@ -330,9 +350,48 @@ class Supervisor:
         message = f"db-sync exited unexpectedly ({code_text}); restarting in {delay}s"
         if last_lines:
             message += "\n" + last_lines
-        condition = "process_crashed" if rt.crashes == CRASH_ALERT_AFTER else ""
-        events.error(project, message, condition=condition)
+        if rt.crashes == CRASH_ALERT_AFTER:
+            conditions.activate(project, "process_crashed", message, level=Event.Level.ERROR)
+        else:
+            events.error(project, message)
         log.warning("db-sync for %s exited (%s); restart in %ss", project, code_text, delay)
+
+    # --- step 5: consistency check and health ---------------------------------
+
+    def _maybe_check(self, project, rt, now):
+        if now - rt.last_check_at < settings.DBSYNC_CHECK_INTERVAL:
+            return
+        rt.last_check_at = now
+        if not project.connections.all():
+            return
+
+        process_running = (
+            rt.child is not None and rt.child.alive
+            and project.process_state == PS.RUNNING
+            and project.desired_state == SyncProject.DesiredState.RUNNING
+        )
+        health, wanted, messages = check.run_project_check(project, process_running=process_running)
+
+        # Stuck: one automatic restart first; alert only if still stuck later.
+        if "stuck" in wanted:
+            if rt.stuck_restart_at is None:
+                rt.stuck_restart_at = now
+                rt.restart_requested = True
+                events.warning(project, "checkout is not advancing while db-sync runs; restarting it once: "
+                               + messages.get("stuck", ""))
+                wanted.discard("stuck")
+            elif now - rt.stuck_restart_at < settings.DBSYNC_STUCK_AFTER:
+                wanted.discard("stuck")
+        else:
+            rt.stuck_restart_at = None
+
+        conditions.apply(project, wanted, messages)
+
+        # A crash loop resolves once the daemon has stayed up for a check interval.
+        if process_running and now - rt.last_start_at >= settings.DBSYNC_CHECK_INTERVAL:
+            conditions.resolve(project, "process_crashed", "resolved: db-sync has stayed up")
+
+        log.info("check: %s health=%s conditions=%s", project, health, sorted(wanted) or "-")
 
     # --- helpers -------------------------------------------------------------
 

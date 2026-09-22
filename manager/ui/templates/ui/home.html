@@ -1,0 +1,23 @@
+{% extends "ui/base.html" %}
+{% block title %}Projects · dbsync-manager{% endblock %}
+{% block content %}
+<h1>Projects</h1>
+<form class="filters" method="get" hx-get="{% url 'projects_table' %}" hx-target="#projects" hx-trigger="change">
+  <label>Desired
+    <select name="desired_state"><option value="">all</option>
+      {% for value, label in desired_choices %}<option value="{{ value }}" {% if filters.desired_state == value %}selected{% endif %}>{{ label }}</option>{% endfor %}
+    </select></label>
+  <label>Process
+    <select name="process_state"><option value="">all</option>
+      {% for value, label in process_choices %}<option value="{{ value }}" {% if filters.process_state == value %}selected{% endif %}>{{ label }}</option>{% endfor %}
+    </select></label>
+  <label>Health
+    <select name="health"><option value="">all</option>
+      {% for value, label in health_choices %}<option value="{{ value }}" {% if filters.health == value %}selected{% endif %}>{{ label }}</option>{% endfor %}
+    </select></label>
+  {% if user.is_staff %}<a class="button" href="{% url 'admin:registry_syncproject_add' %}">Add sync (admin form)</a>{% endif %}
+</form>
+<div id="projects" hx-get="{% url 'projects_table' %}" hx-include=".filters" hx-trigger="every 10s" hx-swap="innerHTML">
+  {% include "ui/partials/projects_table.html" %}
+</div>
+{% endblock %}

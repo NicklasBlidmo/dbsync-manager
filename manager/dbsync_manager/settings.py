@@ -69,6 +69,7 @@ INSTALLED_APPS = [
     "django.contrib.postgres",
     "registry.apps.RegistryConfig",
     "supervisor.apps.SupervisorConfig",
+    "ui.apps.UiConfig",
 ]
 
 MIDDLEWARE = [
@@ -130,8 +131,9 @@ AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
 ]
 
-LOGIN_URL = "/admin/login/"
-LOGIN_REDIRECT_URL = "/admin/"
+LOGIN_URL = "/login/"
+LOGIN_REDIRECT_URL = "/"
+LOGOUT_REDIRECT_URL = "/login/"
 
 # Behind the organisation's TLS proxy (design §12). SECURE_COOKIES is off by
 # default so a plain-HTTP evaluation on port 8080 can log in.

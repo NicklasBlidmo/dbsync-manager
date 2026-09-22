@@ -191,6 +191,9 @@ class SyncProject(OwnedModel):
     process_reason = models.TextField(blank=True, editable=False)
     health = models.CharField(max_length=12, choices=Health.choices, default=Health.UNKNOWN, editable=False)
     health_since = models.DateTimeField(null=True, blank=True, editable=False)
+    # Active alert conditions, key -> ISO time it became active (§6 alert
+    # de-duplication). Written by supervisor.conditions only.
+    active_conditions = models.JSONField(default=dict, blank=True, editable=False)
 
     post_init_hook = models.ForeignKey(
         Hook, null=True, blank=True, on_delete=models.SET_NULL, related_name="+",

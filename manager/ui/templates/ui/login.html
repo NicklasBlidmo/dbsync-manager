@@ -1,0 +1,15 @@
+{% extends "ui/base.html" %}
+{% block title %}Log in · dbsync-manager{% endblock %}
+{% block content %}
+<div class="login panel">
+  <h1>Log in</h1>
+  {% if form.errors %}<div class="notice bad">Wrong username or password.</div>{% endif %}
+  <form method="post">
+    {% csrf_token %}
+    <label>Username<input type="text" name="username" autofocus autocomplete="username"></label>
+    <label>Password<input type="password" name="password" autocomplete="current-password"></label>
+    <input type="hidden" name="next" value="{{ next }}">
+    <button type="submit">Log in</button>
+  </form>
+</div>
+{% endblock %}

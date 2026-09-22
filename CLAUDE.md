@@ -62,3 +62,9 @@ Working agreements:
 - The production installation is described in the newest review note. Its
   `.env` and any `docker-compose.override.yml` live only on the server.
 - Code, comments and docs in this repository are in English.
+- Tests run on Windows too: `sqlite3.connect()` used as a context manager
+  commits but does not close, and an open handle makes TemporaryDirectory
+  cleanup fail there. Use `contextlib.closing` (see supervisor/check.py).
+- Every new supervisor loop step gets a test that goes through
+  `_reconcile`, with the registry writes stubbed, not only through the
+  helper it calls (the pause bug of 2026-09-22 hid behind that gap).

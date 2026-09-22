@@ -1,0 +1,33 @@
+{% extends "ui/base.html" %}
+{% load ui_extras %}
+{% block title %}{{ project.mergin_project }} · dbsync-manager{% endblock %}
+{% block content %}
+<h1>{{ project.mergin_project }} <span class="muted">→ {{ project.database.name }}, prefix {{ project.schema_prefix }}</span></h1>
+
+<div id="status" hx-get="{% url 'project_status' project.pk %}" hx-trigger="every 10s" hx-swap="innerHTML">
+  {% include "ui/partials/status.html" %}
+</div>
+
+<h2>Log <span class="muted">(last {{ log_tail|length|default:0 }} chars of dbsync.log, live)</span></h2>
+<div id="log" hx-get="{% url 'project_log' project.pk %}" hx-trigger="every 10s" hx-swap="innerHTML">
+  {% include "ui/partials/log.html" %}
+</div>
+
+<h2>Events <span class="muted">(last 50)</span></h2>
+<table>
+  <thead><tr><th>When</th><th>Level</th><th>Source</th><th>Message</th><th>Condition</th></tr></thead>
+  <tbody>
+  {% for event in events %}
+    <tr>
+      <td class="muted" style="white-space:nowrap">{{ event.at|date:"Y-m-d H:i:s" }}</td>
+      <td><span class="badge {{ event.level|badge }}">{{ event.level }}</span></td>
+      <td class="muted">{{ event.source }}{% if event.user %} ({{ event.user.get_username }}){% endif %}</td>
+      <td><pre style="max-height:8rem">{{ event.message }}</pre></td>
+      <td class="muted">{% if event.condition %}{{ event.condition|condition_label }}{% endif %}</td>
+    </tr>
+  {% empty %}
+    <tr><td colspan="5" class="muted">No events yet.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

@@ -1,0 +1,69 @@
+{% load ui_extras %}
+<div class="panel">
+  <p>
+    <span class="badge {{ project.desired_state|badge }}">desired: {{ project.desired_state }}</span>
+    <span class="badge {{ project.process_state|badge }}">process: {{ project.process_state }}</span>
+    <span class="badge {{ project.health|badge }}">health: {{ project.get_health_display }}</span>
+    {% if project.health_since %}<span class="muted">since {{ project.health_since|date:"Y-m-d H:i" }}</span>{% endif %}
+    {% if can_operate %}
+      <span style="float:right">
+        {% if project.desired_state == "running" %}
+        <form class="inline" method="post" action="{% url 'project_action' project.pk 'pause' %}">{% csrf_token %}<button type="submit">Pause</button></form>
+        {% else %}
+        <form class="inline" method="post" action="{% url 'project_action' project.pk 'resume' %}">{% csrf_token %}<button type="submit">Resume</button></form>
+        {% endif %}
+        <button disabled title="operations slice">Re-init</button>
+        <button disabled title="operations slice">Remove</button>
+      </span>
+    {% endif %}
+  </p>
+  {% if project.process_reason %}<pre style="max-height:10rem">{{ project.process_reason }}</pre>{% endif %}
+  {% for key, since in active_conditions %}
+    <div class="notice {% if 'divergence' in key or 'stranded' in key or 'stuck' in key or 'crashed' in key %}bad{% endif %}">
+      <strong>{{ key|condition_label }}</strong> <span class="muted">active since {{ since }}</span>
+    </div>
+  {% endfor %}
+  {% if project.health == "ok" %}<p class="muted">No divergence detected (counts, versions). This is not a content verification (design §6).</p>{% endif %}
+</div>
+
+<div class="grid">
+{% for status in statuses %}
+  <div class="panel">
+    <strong>{{ status.connection.sync_file }}</strong>
+    <span class="muted">→ {{ status.connection.modified_schema }} / {{ status.connection.base_schema }}</span>
+    <dl style="margin-top:.5rem">
+      <dt>Versions</dt><dd>server {{ status.server_version|version }} · checkout {{ status.local_version|version }} · database {{ status.db_version|version }}
+        {% if status.interrupted_pull %}<span class="badge warn">database behind checkout</span>{% endif %}</dd>
+      <dt>Direction</dt><dd>{% if status.direction %}<span class="badge {{ status.direction|badge }}">{{ status.get_direction_display }}</span>{% else %}<span class="muted">unknown</span>{% endif %}
+        <span class="muted">· Mergin permission: {{ status.mergin_permission|default:"unknown" }}
+        · other writers: {% if status.db_writers %}{{ status.db_writers|join:", " }}{% else %}none found{% endif %}</span></dd>
+      <dt>Checked</dt><dd>{% if status.checked_at %}{{ status.checked_at|date:"Y-m-d H:i:s" }}{% else %}never{% endif %}
+        {% if status.last_pull_at %}<span class="muted">· last pull seen {{ status.last_pull_at|date:"Y-m-d H:i" }}</span>{% endif %}</dd>
+      {% if status.check_error %}<dt>Check error</dt><dd class="notice bad">{{ status.check_error }}</dd>{% endif %}
+    </dl>
+    {% if status.table_rows %}
+    <table style="margin-top:.5rem">
+      <thead><tr><th>Table</th><th class="num">GeoPackage</th><th class="num">Base</th><th class="num">Modified</th><th></th></tr></thead>
+      <tbody>
+      {% for row in status.table_rows %}
+        <tr>
+          <td>{{ row.table }}</td>
+          <td class="num">{{ row.gpkg|default_if_none:"–" }}</td>
+          <td class="num">{{ row.base|default_if_none:"–" }}</td>
+          <td class="num">{{ row.modified|default_if_none:"–" }}</td>
+          <td>{% if row.streak >= 2 %}<span class="badge bad">base behind ×{{ row.streak }}</span>{% elif row.streak == 1 %}<span class="badge muted">mismatch once</span>{% endif %}
+              {% if row.pending %}{% if status.interrupted_pull %}<span class="badge warn">interrupted pull, not user edits</span>{% else %}<span class="badge info">pending database changes</span>{% endif %}{% endif %}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+  </div>
+{% empty %}
+  {% for conn in connections %}
+  <div class="panel"><strong>{{ conn.sync_file }}</strong> <span class="muted">→ {{ conn.modified_schema }} / {{ conn.base_schema }} · not checked yet</span></div>
+  {% empty %}
+  <div class="panel muted">This project has no connections. Add its GeoPackages in the admin.</div>
+  {% endfor %}
+{% endfor %}
+</div>

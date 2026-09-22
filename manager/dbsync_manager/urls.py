@@ -1,20 +1,20 @@
 """
 URL configuration.
 
-Slice 1 (design §14): the Django admin is the whole UI. The HTMX pages of
-§9 are added in later slices under their own app.
+The HTMX pages of design §9 live in the `ui` app; the Django admin stays
+for credentials, hooks and users (Settings in §9) and as the add form until
+the wizard (slice 4).
 """
 
 from django.contrib import admin
-from django.urls import path
-from django.views.generic import RedirectView
+from django.urls import include, path
 
 from . import views
 
 urlpatterns = [
-    path("", RedirectView.as_view(url="/admin/", permanent=False)),
     path("healthz", views.healthz, name="healthz"),
     path("admin/", admin.site.urls),
+    path("", include("ui.urls")),
 ]
 
 admin.site.site_header = "dbsync-manager"

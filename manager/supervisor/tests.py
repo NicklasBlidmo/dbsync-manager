@@ -208,6 +208,13 @@ def paused_project(pk=7, process_state=PS.RUNNING):
 
 
 class ReconcilePauseTests(SimpleTestCase):
+
+    def setUp(self):
+        # The check (slice 3) queries the registry; these tests cover the
+        # process path only.
+        patcher = mock.patch.object(Supervisor, "_maybe_check")
+        patcher.start()
+        self.addCleanup(patcher.stop)
     def test_stop_is_a_method_not_shadowed_by_an_attribute(self):
         supervisor = Supervisor(tick_seconds=1)
         self.assertTrue(callable(supervisor._stop), "_stop must be the daemon-stopping method")
@@ -262,6 +269,13 @@ class ReconcilePauseTests(SimpleTestCase):
 
 @unittest.skipUnless(os.name == "posix", "signals are POSIX-only")
 class ReconcilePauseWithRealChildTests(SimpleTestCase):
+
+    def setUp(self):
+        # The check (slice 3) queries the registry; these tests cover the
+        # process path only.
+        patcher = mock.patch.object(Supervisor, "_maybe_check")
+        patcher.start()
+        self.addCleanup(patcher.stop)
     @mock.patch("supervisor.core.events")
     @mock.patch.object(Supervisor, "_set_state")
     def test_real_child_is_terminated_and_reaped(self, set_state, events_mod):
