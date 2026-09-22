@@ -169,3 +169,114 @@ class ProcessTests(SimpleTestCase):
             # Our own process is alive but does not run "config.yaml".
             processes.write_pidfile(pidfile, os.getpid(), Path(tmp) / "config.yaml")
             self.assertIsNone(processes.adopt(pidfile))
+
+
+# --- the pause path through _reconcile (field finding 2026-09-22) ------------
+#
+# Pause never worked in the first field test: `self._stop = Event()` shadowed
+# the `_stop()` method, so _reconcile called the Event. The process tests
+# above call child.terminate() directly and could not see it. These go
+# through _reconcile with the registry writes stubbed out.
+
+from unittest import mock  # noqa: E402
+
+from .core import STOP_GRACE, Runtime, Supervisor  # noqa: E402
+
+PS = SyncProject.ProcessState
+
+
+class StubChild:
+    def __init__(self):
+        self.alive = True
+        self.pid = 4242
+        self.exit_code = None
+        self.terminated = False
+        self.killed = False
+
+    def terminate(self):
+        self.terminated = True
+
+    def kill(self):
+        self.killed = True
+
+
+def paused_project(pk=7, process_state=PS.RUNNING):
+    return SyncProject(
+        pk=pk, mergin_project="ak/x", schema_prefix="x",
+        desired_state=SyncProject.DesiredState.PAUSED, process_state=process_state,
+    )
+
+
+class ReconcilePauseTests(SimpleTestCase):
+    def test_stop_is_a_method_not_shadowed_by_an_attribute(self):
+        supervisor = Supervisor(tick_seconds=1)
+        self.assertTrue(callable(supervisor._stop), "_stop must be the daemon-stopping method")
+        self.assertIsNot(supervisor._stop, supervisor._stop_requested)
+
+    @mock.patch("supervisor.core.events")
+    @mock.patch.object(Supervisor, "_set_state")
+    def test_paused_project_gets_sigterm_then_sigkill_then_stopped(self, set_state, events_mod):
+        supervisor = Supervisor(tick_seconds=1)
+        project = paused_project()
+        child = StubChild()
+        rt = Runtime(child=child)
+        supervisor.runtimes[project.pk] = rt
+
+        # Tick 1: SIGTERM and process_state stopping.
+        supervisor._reconcile(project)
+        self.assertTrue(child.terminated)
+        self.assertFalse(child.killed)
+        self.assertIsNotNone(rt.stopping_since)
+        set_state.assert_called_with(project, PS.STOPPING, "")
+
+        # Tick 2, still within the grace period: nothing more.
+        child.terminated = False
+        supervisor._reconcile(project)
+        self.assertFalse(child.terminated)
+        self.assertFalse(child.killed)
+
+        # Grace period over and the child still alive: SIGKILL.
+        rt.stopping_since -= STOP_GRACE + 1
+        supervisor._reconcile(project)
+        self.assertTrue(child.killed)
+
+        # The child is gone: stopped, an info event, no crash bookkeeping.
+        child.alive = False
+        child.exit_code = -15
+        supervisor._reconcile(project)
+        self.assertIsNone(rt.child)
+        self.assertIsNone(rt.stopping_since)
+        self.assertEqual(rt.crashes, 0)
+        set_state.assert_called_with(project, PS.STOPPED, "")
+        events_mod.info.assert_called()
+        events_mod.error.assert_not_called()
+
+    @mock.patch("supervisor.core.events")
+    @mock.patch.object(Supervisor, "_set_state")
+    def test_paused_project_without_child_is_marked_stopped(self, set_state, events_mod):
+        supervisor = Supervisor(tick_seconds=1)
+        project = paused_project(process_state=PS.CRASHED)
+        supervisor._reconcile(project)
+        set_state.assert_called_once_with(project, PS.STOPPED, "")
+
+
+@unittest.skipUnless(os.name == "posix", "signals are POSIX-only")
+class ReconcilePauseWithRealChildTests(SimpleTestCase):
+    @mock.patch("supervisor.core.events")
+    @mock.patch.object(Supervisor, "_set_state")
+    def test_real_child_is_terminated_and_reaped(self, set_state, events_mod):
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            config = work / "config.yaml"
+            config.write_text("x", encoding="utf-8")
+            command = [sys.executable, "-c", "import time; time.sleep(30)", str(config)]
+            child = processes.spawn(command, work, work / "err.log", work / processes.PIDFILE_NAME, config)
+            supervisor = Supervisor(tick_seconds=1)
+            project = paused_project(pk=8)
+            supervisor.runtimes[project.pk] = Runtime(child=child)
+            with override_settings(DBSYNC_DATA_DIR=work):
+                supervisor._reconcile(project)          # SIGTERM
+                self.assertEqual(processes.wait_for_exit([child], timeout=5), [])
+                supervisor._reconcile(project)          # reaped -> stopped
+            self.assertIsNone(supervisor.runtimes[project.pk].child)
+            set_state.assert_called_with(project, PS.STOPPED, "")

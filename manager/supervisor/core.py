@@ -68,7 +68,10 @@ class Runtime:
 class Supervisor:
     def __init__(self, tick_seconds: int):
         self.tick_seconds = tick_seconds
-        self._stop = threading.Event()
+        # Set by SIGTERM/SIGINT to end the loop. Named so it cannot shadow the
+        # _stop() method below: an earlier `self._stop = Event()` did, and
+        # pause silently called the Event instead of stopping the daemon.
+        self._stop_requested = threading.Event()
         self._lock_held = False
         self.runtimes: dict[int, Runtime] = {}
 
@@ -80,7 +83,7 @@ class Supervisor:
 
     def _on_signal(self, signum, frame):
         log.info("received signal %s, stopping after the current tick", signum)
-        self._stop.set()
+        self._stop_requested.set()
 
     def ensure_lock(self):
         """Hold a session-level advisory lock for the life of this process.
@@ -108,7 +111,7 @@ class Supervisor:
         self.ensure_lock()
         self.adopt_orphans()
         log.info("supervisor running, tick every %ss", self.tick_seconds)
-        while not self._stop.is_set():
+        while not self._stop_requested.is_set():
             try:
                 self.ensure_lock()
                 self.tick()
@@ -118,7 +121,7 @@ class Supervisor:
                 self._lock_held = False
             except Exception:  # noqa: BLE001 - the loop must survive a bad tick
                 log.exception("tick failed")
-            self._stop.wait(self.tick_seconds)
+            self._stop_requested.wait(self.tick_seconds)
         self.shutdown()
 
     def shutdown(self):
