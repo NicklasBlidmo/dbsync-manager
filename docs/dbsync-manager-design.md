@@ -715,12 +715,20 @@ does mean a pull happened; the hook is not told which one.
   process, health; §6 "State model"), direction badge, server/local/DB
   version, last pull, and an "operation in progress" marker. Filters by
   each badge. Removed projects are hidden unless asked for.
-- **Add sync**: search box → Mergin API project search (name, workspace) →
-  project detail: list of GeoPackages with sizes from the API's file list
-  (no feature counts; they appear in `sync_status` after init) → choose
-  GeoPackages, schema prefix (default derived from the project name,
-  editable), Mergin account, database, init direction, hooks, notification
-  e-mails → **preview**: the account's permission on the project, the
+- **Add sync**: pick Mergin account and database → workspace → project
+  search within it (Mergin API, only projects where the account has at
+  least Reader) → project detail: the GeoPackages from the API's file list
+  with sizes (no feature counts; they appear in `sync_status` after init),
+  files with an `(edit conflict` sibling marked as not syncable → tick the
+  files to sync → schema prefix, default the project name made into a
+  PostgreSQL identifier (lower case, `[^a-z0-9_]` → `_`), editable →
+  schema names derived per file and shown in an editable table:
+  `<prefix>_s_<stem>` (modified) and `<prefix>_b_<stem>` (base), where
+  `stem` is the file name without extension and without a leading
+  ordering token (`1-punkter.gpkg` → `punkter`, `d-foto.gpkg` → `foto`),
+  lower-cased with `_` for other characters, the whole name cut to
+  PostgreSQL's 63 characters; duplicates within the project are refused →
+  init direction, hooks, notification e-mails → **preview**: the account's permission on the project, the
   writers found in the target database, the resulting direction (§7), and
   whether the target schemas already exist and belong to this project
   (adoption, §15) or to something else (rejected). Reader plus other
@@ -978,10 +986,12 @@ v1: everything above except SSO and the CLI, built in vertical slices in
 this order, each ending with its §13 integration test: (1) skeleton with
 registry, credentials and Docker image, Django admin as the UI (done
 2026-09-21); (2) supervisor start/stop/pause/resume with a project added
-via admin (code 2026-09-22, field test pending with `p3922_test`); (3)
-consistency check, health and the project page; (4) hooks and alerts; (5)
-remove and re-init as operations; (6) add wizard and log history. The JSON
-API is added when `akdb project close` needs it.
+via admin (done and field-tested with `p3922_test`, 2026-09-22); (3)
+consistency check, health and the project page; (4) add wizard (moved up
+from last place on 2026-09-22, so no further project is added with
+hand-written schema names); (5) hooks and alerts; (6) remove and re-init
+as operations; (7) log history. The JSON API is added when `akdb project
+close` needs it.
 v1.1: OIDC login; per-project notification channels beyond e-mail (webhook);
 **content-level consistency check** as a spike: a normalised per-row hash
 per table computed in both SQLite and PostgreSQL (geometry as WKB, floats
@@ -1067,6 +1077,11 @@ Decided 2026-09-22 (after the first installation):
   the registry and the synced schemas, plus the Fernet key kept in the
   organisation's password manager.
 - **Name**: `dbsync-manager` stays until Lutra asks for something else.
+- **Schema names from the prefix** (after the first admin-only projects):
+  `<prefix>_s_<stem>` and `<prefix>_b_<stem>`, stem = file name without
+  extension and leading ordering token, as §9 describes; always editable
+  per row so adoption can match existing names exactly. The add wizard
+  moves up to slice 4 (§14) for the same reason.
 
 Still open:
 
