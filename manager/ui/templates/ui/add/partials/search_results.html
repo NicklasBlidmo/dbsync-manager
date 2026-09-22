@@ -1,0 +1,20 @@
+{% if error %}<div class="notice bad">Mergin API: {{ error }}</div>
+{% elif not workspace %}<p class="muted">Choose a workspace to list its projects.</p>
+{% else %}
+<table>
+  <thead><tr><th>Project</th><th class="num">Version</th><th>Updated</th><th>Account's permission</th><th></th></tr></thead>
+  <tbody>
+  {% for p in results %}
+    <tr>
+      <td>{{ p.path }}</td>
+      <td class="num">{% if p.version %}v{{ p.version }}{% else %}–{% endif %}</td>
+      <td class="muted">{{ p.updated|default:""|slice:":16" }}</td>
+      <td>{% if p.permission %}<span class="badge {% if p.permission == "reader" %}ok{% else %}info{% endif %}">{{ p.permission }}</span>{% else %}<span class="badge bad">none</span>{% endif %}</td>
+      <td>{% if p.permission %}<a class="button" href="{% url 'add_project' %}?account={{ account.pk }}&amp;database={{ database }}&amp;project={{ p.path|urlencode }}">Choose</a>{% endif %}</td>
+    </tr>
+  {% empty %}
+    <tr><td colspan="5" class="muted">No projects in {{ workspace }} match.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}

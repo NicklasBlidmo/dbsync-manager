@@ -1,0 +1,4 @@
+{% if error %}<option value="">cannot list workspaces: {{ error|truncatechars:80 }}</option>
+{% else %}<option value="">– choose –</option>
+{% for ws in workspaces %}<option value="{{ ws.name }}">{{ ws.name }}{% if ws.role %} ({{ ws.role }}){% endif %}</option>{% endfor %}
+{% endif %}

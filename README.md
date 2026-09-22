@@ -9,7 +9,7 @@ Section numbers in code comments (§6, §8, ...) refer to it.
 
 ## Status
 
-Slice 3 of 7 (design §14). The supervisor renders db-sync's config from the
+Slice 4 of 7 (design §14). The supervisor renders db-sync's config from the
 registry, starts one daemon per project with `desired_state = running`,
 stops it on `paused`, restarts it with backoff after a crash, re-attaches to
 daemons left running by a previous supervisor, and every `DBSYNC_CHECK_INTERVAL`
@@ -18,10 +18,13 @@ counts GeoPackage vs base vs modified, Mergin permission and database
 writers, from which it derives `health` and the alert conditions (design §6).
 The web UI at `/` shows every project with its three badges (desired,
 process, health) and a project page with status per GeoPackage, direction
-facts, live log tail, events and pause/resume. Projects are still added in
-the Django admin (Registry → Sync projects, with their connections inline).
-Not yet: the add wizard, hooks, e-mail alerts, remove/re-init operations,
-log history.
+facts, live log tail, events and pause/resume. "Add sync" is a wizard:
+pick account and database, search a Mergin workspace, tick the project's
+GeoPackages, get schema names derived from a prefix (editable), and a
+preview that checks the target database (new schemas, adoption of an
+existing hand-run sync, or a conflict) and the resulting direction before
+anything is created. The admin form remains for edge cases.
+Not yet: hooks, e-mail alerts, remove/re-init operations, log history.
 
 ## Quick start
 
@@ -99,7 +102,7 @@ manager/              Django project
   preflight.py        start-up checks with one-line messages
   registry/           data model (§5), crypto (§4), admin, groups (§4)
   supervisor/         `manage.py supervise` (§6): processes, config, check, health
-  ui/                 HTMX pages (§9): projects, project page, login
+  ui/                 HTMX pages (§9): projects, project page, add wizard, login
 patches/              applied to db-sync at image build (#163)
 tools/                check_sync.sh, standalone cron check without the manager
 docs/                 design document

@@ -43,6 +43,17 @@ def base_schema_comments(database, schemas) -> dict:
     return result
 
 
+def parse_comment(comment) -> dict | None:
+    """db-sync's JSON schema comment as a dict, or None."""
+    if not comment:
+        return None
+    try:
+        parsed = json.loads(comment)
+    except ValueError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
 def parse_version(text) -> int | None:
     """'v123' -> 123; None for anything else."""
     if not isinstance(text, str) or not text.startswith("v"):

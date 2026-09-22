@@ -1,0 +1,58 @@
+{% extends "ui/base.html" %}
+{% block title %}Add {{ project }} · dbsync-manager{% endblock %}
+{% block content %}
+<h1>Add sync <span class="muted">step 2 of 3: {{ project }}</span></h1>
+<p class="muted">Server version {% if version %}v{{ version }}{% else %}unknown{% endif %} · account {{ account.name }} has
+  {% if permission %}<span class="badge info">{{ permission }}</span>{% else %}<span class="badge bad">no access</span>{% endif %}
+  · target database {{ database.name }}</p>
+
+<form method="post" action="{% url 'add_preview' %}" id="add">
+  {% csrf_token %}
+  <input type="hidden" name="account" value="{{ account.pk }}">
+  <input type="hidden" name="database" value="{{ database.pk }}">
+  <input type="hidden" name="project" value="{{ project }}">
+  <input type="hidden" name="project_id" value="{{ project_id }}">
+
+  <h2>GeoPackages to sync</h2>
+  <div class="panel">
+  {% for f in files %}
+    <label style="display:block">
+      <input type="checkbox" name="pick" value="{{ f.path }}" {% if not f.conflict_copy %}checked{% else %}disabled{% endif %}
+             hx-get="{% url 'add_names' %}" hx-target="#names" hx-include="#add" hx-trigger="change">
+      {{ f.path }} <span class="muted">{% if f.size %}({{ f.size|filesizeformat }}){% endif %}</span>
+      {% if f.conflict_copy %}<span class="badge bad">edit-conflict copy, cannot sync</span>{% endif %}
+      {% if f.has_conflict %}<span class="badge warn">has an edit-conflict sibling in the project</span>{% endif %}
+    </label>
+  {% empty %}
+    <p class="muted">This project has no GeoPackage files.</p>
+  {% endfor %}
+  </div>
+
+  <h2>Schema names</h2>
+  <div class="panel">
+    <label>Prefix <input name="prefix" value="{{ prefix }}" pattern="[a-z_][a-z0-9_]*" maxlength="63"
+           hx-get="{% url 'add_names' %}" hx-target="#names" hx-include="#add" hx-trigger="keyup changed delay:400ms, change"></label>
+    <span class="muted">Names below are derived as prefix_s_stem and prefix_b_stem; edit them per row after choosing the prefix (changing the prefix or the ticked files re-derives all rows).</span>
+    <div id="names">{% include "ui/add/partials/names_table.html" %}</div>
+  </div>
+
+  <h2>Options</h2>
+  <div class="panel grid">
+    <label>Initialise from<br>
+      <select name="init_from">
+        <option value="gpkg">GeoPackage (create database schemas)</option>
+        <option value="db">Database (existing modified schema; create GeoPackage in Mergin)</option>
+      </select></label>
+    <label>Sleep between cycles (s)<br><input name="sleep_time" type="number" min="1" value="10"></label>
+    {% for kind, choices in hooks.items %}
+    <label>{{ kind }} hook<br>
+      <select name="{{ kind }}_hook"><option value="">none</option>
+        {% for hook in choices %}<option value="{{ hook.pk }}">{{ hook.name }}</option>{% endfor %}
+      </select></label>
+    {% endfor %}
+    <label>Alert e-mails<br><input name="notify_emails" placeholder="a@example.org, b@example.org"></label>
+  </div>
+
+  <p><button type="submit">Preview</button> <a class="button" href="{% url 'add_start' %}">Back</a></p>
+</form>
+{% endblock %}

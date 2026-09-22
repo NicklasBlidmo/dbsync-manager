@@ -1,0 +1,27 @@
+{% extends "ui/base.html" %}
+{% block title %}Add sync · dbsync-manager{% endblock %}
+{% block content %}
+<h1>Add sync <span class="muted">step 1 of 3: choose the project</span></h1>
+{% if not accounts or not databases %}
+<div class="notice bad">Add a Mergin account and a database under Settings (admin) first.</div>
+{% endif %}
+<form class="panel" id="pick" onsubmit="return false">
+  <div class="grid">
+    <label>Mergin account<br>
+      <select name="account" hx-get="{% url 'add_workspaces' %}" hx-target="#workspace" hx-trigger="change, load">
+        {% for account in accounts %}<option value="{{ account.pk }}">{{ account.name }} ({{ account.username }})</option>{% endfor %}
+      </select></label>
+    <label>Target database<br>
+      <select name="database">
+        {% for database in databases %}<option value="{{ database.pk }}">{{ database.name }} ({{ database.user }}@{{ database.host }}/{{ database.dbname }})</option>{% endfor %}
+      </select></label>
+    <label>Workspace<br>
+      <select name="workspace" id="workspace" hx-get="{% url 'add_search' %}" hx-target="#results" hx-include="#pick" hx-trigger="change">
+        <option value="">loading…</option>
+      </select></label>
+    <label>Project name contains<br>
+      <input type="search" name="q" placeholder="type to search" hx-get="{% url 'add_search' %}" hx-target="#results" hx-include="#pick" hx-trigger="keyup changed delay:400ms, search"></label>
+  </div>
+</form>
+<div id="results"><p class="muted">Choose a workspace to list its projects.</p></div>
+{% endblock %}

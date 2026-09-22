@@ -1007,7 +1007,9 @@ consistency check, health and the project page (done and field-tested
 from the real permission and catalogue; `db_behind`, `stuck` and a Reader
 account not yet provoked on real data); (4) add wizard (moved up
 from last place on 2026-09-22, so no further project is added with
-hand-written schema names); (5) hooks and alerts; (6) remove and re-init
+hand-written schema names; code 2026-09-22, field test pending: the
+Mergin workspace and project-list calls are exercised for the first
+time there); (5) hooks and alerts; (6) remove and re-init
 as operations; (7) log history. The JSON API is added when `akdb project
 close` needs it.
 v1.1: OIDC login; per-project notification channels beyond e-mail (webhook);

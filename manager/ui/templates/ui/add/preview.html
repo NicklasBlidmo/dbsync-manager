@@ -1,0 +1,45 @@
+{% extends "ui/base.html" %}
+{% block title %}Add {{ data.project }} · dbsync-manager{% endblock %}
+{% block content %}
+<h1>Add sync <span class="muted">step 3 of 3: preview {{ data.project }}</span></h1>
+
+{% for error in preview.errors %}<div class="notice bad">{{ error }}</div>{% endfor %}
+
+<div class="panel">
+  <dl>
+    <dt>Mergin</dt><dd>{{ data.project }}{% if preview.version %} at v{{ preview.version }}{% endif %}{% if data.account %} · account {{ data.account.name }}:{% endif %}
+      {% if preview.permission %}<span class="badge info">{{ preview.permission }}</span>{% else %}<span class="badge bad">no access</span>{% endif %}</dd>
+    <dt>Database</dt><dd>{% if data.database %}{{ data.database.name }}{% endif %} · prefix {{ data.prefix }} · init from {{ data.init_from }} · every {{ data.sleep_time }} s</dd>
+    <dt>Direction</dt><dd>{% if preview.direction %}<span class="badge {% if preview.direction == "db_edits_cannot_push" %}warn{% elif preview.direction == "one_way" %}ok{% else %}info{% endif %}">{{ preview.direction }}</span>{% else %}<span class="muted">cannot be assessed</span>{% endif %}</dd>
+    {% if data.hooks %}<dt>Hooks</dt><dd>{% for kind, hook in data.hooks.items %}{{ kind }}: {{ hook.name }}{% if not forloop.last %} · {% endif %}{% endfor %}</dd>{% endif %}
+    {% if data.notify_emails %}<dt>Alerts to</dt><dd>{{ data.notify_emails|join:", " }}</dd>{% endif %}
+  </dl>
+</div>
+
+{% if preview.checks %}
+<table>
+  <thead><tr><th>GeoPackage</th><th>modified</th><th>base</th><th>Target</th><th>Writers found</th></tr></thead>
+  <tbody>
+  {% for c in preview.checks %}
+    <tr>
+      <td>{{ c.sync_file }}</td><td>{{ c.modified }}</td><td>{{ c.base }}</td>
+      <td><span class="badge {% if c.state == "new" %}ok{% elif c.state == "adopt" %}warn{% else %}bad{% endif %}">{{ c.state }}</span> <span class="muted">{{ c.reason }}</span></td>
+      <td class="muted">{% if c.writers is None %}{% if c.state == "new" %}–{% else %}unknown{% endif %}{% elif c.writers %}{{ c.writers|join:", " }}{% else %}none{% endif %}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+<form method="post" action="{% url 'add_create' %}" style="margin-top:1rem">
+  {% csrf_token %}
+  {% for name, value in hidden %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
+  {% if preview.needs_ack %}
+  <div class="notice"><label><input type="checkbox" name="ack" value="1" {% if data.ack %}checked{% endif %}> I understand: {{ preview.ack_text }}</label></div>
+  {% endif %}
+  <p>
+    {% if preview.ok %}<button type="submit">Add sync</button>{% endif %}
+    <button type="button" onclick="history.back()">Back</button>
+  </p>
+</form>
+{% endblock %}

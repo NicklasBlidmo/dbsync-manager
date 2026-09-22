@@ -3,23 +3,33 @@ Pages of design §9, server-rendered with HTMX partials.
 
 Slice 3: Projects (home) with the three badges and filters, and the
 project page with status per connection, direction facts, events, log
-tail and pause/resume. Remove, re-init and "run hook now" arrive with the
-operations and hooks slices; the add wizard with slice 4.
+tail and pause/resume. Slice 4: the add wizard. Remove, re-init and "run
+hook now" arrive with the operations and hooks slices.
 """
+
+import logging
 
 from django.conf import settings
 from django.contrib.auth.decorators import login_required, permission_required
-from django.http import HttpResponseBadRequest, HttpResponseNotAllowed
+from django.http import HttpResponseBadRequest
 from django.shortcuts import get_object_or_404, redirect, render
-from django.views.decorators.http import require_POST
+from django.views.decorators.http import require_GET, require_POST
 
 from registry import events
-from registry.models import Event, SyncProject
+from registry.models import Database, Event, Hook, MerginAccount, SyncProject
+from supervisor import mergin_api
 from supervisor.logs import tail
 from supervisor.processes import LOG_NAME, STDERR_NAME
 
+from . import naming, wizard
+
+log = logging.getLogger("ui")
+
 EVENTS_ON_PAGE = 50
 LOG_LINES = 100
+
+
+# --- projects ------------------------------------------------------------------
 
 
 def _projects_queryset(request):
@@ -74,6 +84,7 @@ def home(request):
         "desired_choices": SyncProject.DesiredState.choices,
         "process_choices": SyncProject.ProcessState.choices,
         "health_choices": SyncProject.Health.choices,
+        "can_add": request.user.has_perm("registry.add_syncproject"),
     }
     return render(request, "ui/home.html", context)
 
@@ -163,4 +174,156 @@ def project_action(request, pk, action):
         SyncProject.objects.filter(pk=project.pk).update(desired_state=desired)
         events.record(project, Event.Level.INFO, f"{request.user.get_username()} {text}",
                       source=Event.Source.USER, user=request.user)
+    return redirect("project", pk=project.pk)
+
+
+# --- add wizard (§9) -------------------------------------------------------------
+
+can_add = permission_required("registry.add_syncproject", raise_exception=True)
+
+
+def _account(request):
+    return get_object_or_404(MerginAccount, pk=request.GET.get("account") or 0)
+
+
+@login_required
+@can_add
+def add_start(request):
+    return render(request, "ui/add/start.html", {
+        "accounts": MerginAccount.objects.all(),
+        "databases": Database.objects.all(),
+    })
+
+
+@login_required
+@can_add
+@require_GET
+def add_workspaces(request):
+    """<option>s for the workspace select of one account."""
+    account = _account(request)
+    try:
+        workspaces = mergin_api.workspaces(account)
+        error = ""
+    except Exception as exc:  # noqa: BLE001 - shown to the operator
+        workspaces, error = [], str(exc)
+    return render(request, "ui/add/partials/workspaces.html", {"workspaces": workspaces, "error": error})
+
+
+@login_required
+@can_add
+@require_GET
+def add_search(request):
+    account = _account(request)
+    workspace = request.GET.get("workspace", "").strip()
+    text = request.GET.get("q", "").strip()
+    database = request.GET.get("database", "")
+    results, error = [], ""
+    if workspace:
+        try:
+            results = mergin_api.search_projects(account, workspace, text)
+        except Exception as exc:  # noqa: BLE001
+            error = str(exc)
+    return render(request, "ui/add/partials/search_results.html", {
+        "results": results, "error": error, "account": account, "database": database, "workspace": workspace,
+    })
+
+
+def _project_files(account, project_path):
+    info = mergin_api.project_info(account, project_path)
+    files = mergin_api.geopackages(info)
+    conflict_originals = {naming.conflict_original(f["path"]) for f in files if naming.is_conflict_copy(f["path"])}
+    for entry in files:
+        entry["conflict_copy"] = naming.is_conflict_copy(entry["path"])
+        entry["has_conflict"] = entry["path"] in conflict_originals
+    return info, files
+
+
+@login_required
+@can_add
+@require_GET
+def add_project(request):
+    """Step 2: files, prefix, derived names, options."""
+    account = _account(request)
+    database = get_object_or_404(Database, pk=request.GET.get("database") or 0)
+    project_path = request.GET.get("project", "").strip()
+    if "/" not in project_path:
+        return HttpResponseBadRequest("project must be workspace/name")
+    try:
+        info, files = _project_files(account, project_path)
+    except Exception as exc:  # noqa: BLE001
+        return render(request, "ui/add/error.html", {"message": f"cannot read project {project_path}: {exc}"})
+    prefix = naming.default_prefix(project_path)
+    selectable = [f for f in files if not f["conflict_copy"]]
+    rows = [
+        {"file": f["path"], "modified": m, "base": b}
+        for f in selectable
+        for m, b in [naming.derive_schema_names(prefix, f["path"])]
+    ]
+    return render(request, "ui/add/project.html", {
+        "account": account,
+        "database": database,
+        "project": project_path,
+        "project_id": info.get("id", ""),
+        "version": mergin_api.version_number(info),
+        "permission": mergin_api.permission(info),
+        "files": files,
+        "prefix": prefix,
+        "rows": rows,
+        "hooks": {kind: Hook.objects.filter(kind=kind) for kind in ("post_init", "pre_remove", "post_pull")},
+    })
+
+
+@login_required
+@can_add
+@require_GET
+def add_names(request):
+    """The editable schema-name table for the ticked files and the current prefix."""
+    prefix = naming.sanitize_identifier(request.GET.get("prefix", ""))
+    # The ticked checkboxes are "pick"; the hidden "file" inputs of the
+    # previous table come along through hx-include and are ignored here.
+    files = [f for f in request.GET.getlist("pick") if f] or [f for f in request.GET.getlist("file") if f]
+    rows = [
+        {"file": f, "modified": m, "base": b}
+        for f in files
+        for m, b in [naming.derive_schema_names(prefix, f)]
+    ]
+    return render(request, "ui/add/partials/names_table.html", {"rows": rows, "prefix": prefix})
+
+
+def _preview(request):
+    data, errors = wizard.parse(request.POST)
+    if errors:
+        return data, wizard.Preview(None, None, [], errors, None, False, ""), None
+    try:
+        info = mergin_api.project_info(data.account, data.project)
+        permission = mergin_api.permission(info)
+        version = mergin_api.version_number(info)
+        if not data.project_id and info.get("id"):
+            data.project_id = str(info["id"])
+    except Exception as exc:  # noqa: BLE001
+        permission, version = None, None
+        errors.append(f"cannot read {data.project} with account '{data.account.name}': {exc}")
+    preview = wizard.preview(data, permission, version)
+    preview.errors = errors + preview.errors
+    return data, preview, info if not errors else None
+
+
+@login_required
+@can_add
+@require_POST
+def add_preview(request):
+    data, preview, _ = _preview(request)
+    return render(request, "ui/add/preview.html", {"data": data, "preview": preview, "hidden": data.as_hidden_fields()})
+
+
+@login_required
+@can_add
+@require_POST
+def add_create(request):
+    data, preview, _ = _preview(request)
+    if preview.needs_ack and not data.ack:
+        preview.errors.append("tick the acknowledgement to continue")
+    if preview.errors:
+        return render(request, "ui/add/preview.html", {"data": data, "preview": preview, "hidden": data.as_hidden_fields()})
+    project = wizard.create(data, request.user)
     return redirect("project", pk=project.pk)
