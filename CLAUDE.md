@@ -37,6 +37,14 @@ Invariants learned the hard way:
 - s6-setuidgid does not set HOME; every service script exports it.
 - The first production target already runs a live, hand-configured db-sync
   against the same database. Two daemons must never sync the same schemas.
+  Order decided 2026-09-22 (design §15): the Bönsta clone `p3922_test` is the
+  first project through the manager; Bönsta itself is adopted or moved only
+  after that; POC leftovers are cleaned last. Before any cleanup of a
+  hand-run sync: `pg_dump -n '<prefix>*'`, tables may hold hand-made
+  corrections.
+- db-sync's own init adopts existing schemas whose base comment names the
+  project (downloads `db_version`, compares base with the GeoPackage). The
+  manager's `add` relies on that; it never re-implements init.
 
 Working agreements:
 

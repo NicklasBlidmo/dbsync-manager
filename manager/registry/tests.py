@@ -158,3 +158,18 @@ class SettingsTests(SimpleTestCase):
     def test_cookie_names_do_not_collide_with_other_django_apps(self):
         self.assertNotEqual(settings.SESSION_COOKIE_NAME, "sessionid")
         self.assertNotEqual(settings.CSRF_COOKIE_NAME, "csrftoken")
+
+
+class PreflightConsistencyTests(SimpleTestCase):
+    """preflight.py must not import the settings, so it carries its own copy
+    of what it needs from them (review note 2026-09-21b). Keep them in step."""
+
+    def test_registry_schema_name_matches_settings(self):
+        self.assertEqual(preflight.REGISTRY_SCHEMA, settings.REGISTRY_SCHEMA)
+
+    def test_preflight_and_generate_keys_do_not_import_django(self):
+        for module in (preflight, generate_keys):
+            with open(module.__file__, encoding="utf-8") as handle:
+                source = handle.read()
+            self.assertNotIn("import django", source, module.__name__)
+            self.assertNotIn("from django", source, module.__name__)

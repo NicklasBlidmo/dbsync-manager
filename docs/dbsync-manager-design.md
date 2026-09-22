@@ -696,11 +696,16 @@ does mean a pull happened; the hook is not told which one.
   version, last pull, and an "operation in progress" marker. Filters by
   each badge. Removed projects are hidden unless asked for.
 - **Add sync**: search box → Mergin API project search (name, workspace) →
-  project detail: list of GeoPackages with table names and feature counts
-  (from the API's file list; counts require a download, so shown after a
-  "preview" step) → choose GeoPackages, schema prefix (default derived from
-  the project name, editable), Mergin account, database, init direction,
-  hooks, notification e-mails → confirm → project page in `initializing`.
+  project detail: list of GeoPackages with sizes from the API's file list
+  (no feature counts; they appear in `sync_status` after init) → choose
+  GeoPackages, schema prefix (default derived from the project name,
+  editable), Mergin account, database, init direction, hooks, notification
+  e-mails → **preview**: the account's permission on the project, the
+  writers found in the target database, the resulting direction (§7), and
+  whether the target schemas already exist and belong to this project
+  (adoption, §15) or to something else (rejected). Reader plus other
+  writers requires an "I understand" checkbox; adoption shows "stop the
+  old daemon first" → confirm → project page in `initializing`.
 - **Project page**: status per connection (the `sync_status` row), the
   direction check, the last 50 events, log tail (live via HTMX polling),
   actions: pause / resume / re-init / remove (checkbox: also drop schemas) /
@@ -772,7 +777,11 @@ one row per connection and needs no pruning.
 
 A backup must include the registry, the synced schemas, `/data` and both
 secret keys (`DBSYNC_MANAGER_SECRET_KEY`, `DJANGO_SECRET_KEY`). Backing up
-the registry without the key is useless.
+the registry without the key is useless. The routine is in
+`docs/backup.md` with `tools/backup.sh`: a nightly `pg_dump` of the whole
+database (registry and synced schemas in one consistent snapshot), `/data`
+left out because it is rebuilt from Mergin, and the Fernet key stored in
+the organisation's password manager rather than next to the dumps.
 
 Losing `/data` is recoverable without data loss **only if** there are no
 database edits that db-sync has not pushed, which is guaranteed in a
@@ -854,8 +863,13 @@ What carries over from the POC, and what does not:
   roles used by syncs (which are stored as data). Least privilege: the registry
   role has CREATE on the database and owns `dbsync_manager` only.
 - CSRF and session security are Django defaults. The API uses per-user tokens.
-- The UI should sit behind the organisation's reverse proxy with TLS; the
-  container serves plain HTTP on 8080.
+- The container serves plain HTTP on 8080. It should sit behind the
+  organisation's reverse proxy with TLS once it has a DNS name; until then
+  it is bound to the office LAN address only (`BIND_IP`) and passwords
+  travel in clear on that LAN. This is an accepted limitation of the first
+  installation, not a design property (§15).
+- Cookie names are the manager's own (`dbsync_manager_*`), so other Django
+  applications on the same host name do not log it out or block its forms.
 
 ## 13. Test plan
 
@@ -868,7 +882,13 @@ What carries over from the POC, and what does not:
   failed check neither raises nor resets a streak; alert de-duplication
   (one mail on activation, one on resolution, nothing in between); hook
   environment and pgpass file; output masking and capping; writer detection
-  including a PUBLIC grant and a table owned by another role.
+  including a PUBLIC grant and a table owned by another role; preflight's
+  copy of the registry schema name equals the settings'.
+- Database-backed (compose profile `test` with a throwaway PostGIS, from
+  slice 2): `migrate` with a role that has only `CREATE` on the database,
+  and again with only a pre-created schema; no manager table in `public`;
+  each preflight failure mode produces its documented line; adoption of
+  schemas whose comment names the project, and rejection of the others.
 - Integration (docker compose with a throwaway PostGIS and a test Mergin
   project): add → init completes → status shows equal counts and "no
   divergence detected"; edit in Mergin → counts diverge for one check then
@@ -988,20 +1008,46 @@ Verified against db-sync 2.3.0 and the POC log (2026-09-16):
 
 Still open:
 
-- **Adopting an existing sync.** `add` with `init_from = gpkg` rejects
-  target schemas that already exist (§6 Operations, schema collisions). An
-  installation that already runs db-sync by hand can therefore only move
-  under the manager by re-init: stop the old daemon, drop the schemas, let
-  the manager init, run `post_init`. That is lossless for a Reader (one-way)
-  account but the views and grants are gone in between. Options: document
-  this as the takeover procedure, or add an "adopt" path that takes over the
-  existing checkout and trusts the version in the base schema comment. Must
-  be decided before the slice where the supervisor starts children (§14
-  slice 2). Until then, and always: two daemons must never sync the same
-  schemas.
-- Feature counts per table in the add wizard require downloading the
-  GeoPackages. Acceptable as an explicit "preview" step, or skip in v1?
-- Should the "database edits cannot be pushed" configuration (§7) block
-  add with an "I understand" checkbox, or only warn on the project page?
-- Name. `dbsync-manager` is descriptive; Lutra may prefer something that does
-  not imply it is theirs.
+Decided 2026-09-22 (after the first installation):
+
+- **Adopting an existing sync.** db-sync's own `dbsync_init` already
+  handles it (verified in 2.3.0): when both schemas exist and the base
+  schema comment names the project, it downloads exactly `db_version` into
+  a missing checkout, compares base with the GeoPackage, and continues if
+  they are equal. So `add` accepts target schemas that already exist
+  **when the base schema comment names the same Mergin project**, sets the
+  project straight to `initializing`, and db-sync does the rest; views and
+  grants survive. Schemas that exist without such a comment, or with
+  another project's name, are still rejected (§6 schema collisions). What
+  the manager cannot check is that the old daemon has been stopped; the
+  add page says so in words. Before any cleanup of a hand-run sync:
+  `pg_dump -n '<prefix>*'`, since tables may hold hand-made corrections.
+- **Order for the first installation** (Arkeologikonsult): (1) registry in
+  `ak`, done; (2) the clone of Bönsta, prefix `p3922_test`, becomes the
+  first project added through the manager, in the slice where the
+  supervisor starts children; (3) Bönsta itself is then either adopted or
+  moved to a newly set up production database; (4) POC leftovers are
+  cleaned up last. Until (3), the hand-run `ak-dbsync` stays the reference
+  and is not touched.
+- **"Database edits cannot be pushed" (§7)**: warn at add. The wizard shows
+  the Mergin permission and the database roles found writing, and requires
+  an "I understand" checkbox when the account is Reader and other writers
+  exist. The project page shows the same warning. Not blocking, because a
+  read-only role that happens to hold a stray grant is a legitimate setup.
+- **Feature counts in the add wizard**: skipped in v1. The API's file list
+  gives names and sizes without a download; counts appear in
+  `sync_status` after init.
+- **TLS (§12)**: plain HTTP on the office LAN for now, documented as a
+  limitation, until the manager has a DNS name; then a proxy of the
+  organisation's choice, `CSRF_TRUSTED_ORIGINS` and `SECURE_COOKIES=true`.
+  Not coupled to another application's nginx.
+- **Backup (§10)**: no backup existed. Routine in `docs/backup.md`, script
+  in `tools/backup.sh`: nightly `pg_dump` of the whole database that holds
+  the registry and the synced schemas, plus the Fernet key kept in the
+  organisation's password manager.
+- **Name**: `dbsync-manager` stays until Lutra asks for something else.
+
+Still open:
+
+- Reverse proxy and DNS name for the UI, which unlocks the TLS settings
+  above.
