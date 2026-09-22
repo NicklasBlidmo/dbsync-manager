@@ -53,8 +53,9 @@ class Observed:
     base_count: dict = field(default_factory=dict)
     modified_count: dict = field(default_factory=dict)
     mergin_permission: str | None = None
-    db_writers: list = field(default_factory=list)
-    error: str = ""
+    db_writers: list | None = field(default_factory=list)   # None = could not be determined
+    error: str = ""      # the check failed; previous values are kept
+    warning: str = ""    # a best-effort part failed; the check still counts
 
 
 # --- gathering (I/O) ---------------------------------------------------------
@@ -119,7 +120,7 @@ def db_counts(cursor, schema, tables) -> dict:
 
 WRITERS_SQL = """
 WITH tables AS (
-    SELECT c.oid, c.relname
+    SELECT c.oid, c.relname, c.relowner, c.relacl
     FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
     WHERE n.nspname = %(schema)s AND c.relkind IN ('r', 'p')
 ),
@@ -133,8 +134,11 @@ WHERE has_table_privilege(r.rolname, t.oid, 'INSERT')
    OR has_table_privilege(r.rolname, t.oid, 'UPDATE')
    OR has_table_privilege(r.rolname, t.oid, 'DELETE')
 UNION
+-- A table without explicit grants has relacl NULL, which means the default
+-- ACL (owner everything, PUBLIC nothing). acldefault() spells that out;
+-- '{}'::aclitem[] would not do, aclexplode() rejects a zero-dimensional array.
 SELECT 'PUBLIC'
-FROM tables t, aclexplode(COALESCE((SELECT relacl FROM pg_class WHERE oid = t.oid), '{}'::aclitem[])) a
+FROM tables t, aclexplode(COALESCE(t.relacl, acldefault('r', t.relowner))) a
 WHERE a.grantee = 0 AND a.privilege_type IN ('INSERT', 'UPDATE', 'DELETE')
 ORDER BY 1
 """
@@ -172,6 +176,7 @@ def gather(project, connections) -> dict:
 
     # Database: comments, counts, writers (one connection).
     db_error = ""
+    writers_error = ""
     comments = {}
     db_counts_by_conn = {}
     writers_by_conn = {}
@@ -198,7 +203,15 @@ def gather(project, connections) -> dict:
                     db_counts(cursor, conn.base_schema, tables),
                     db_counts(cursor, conn.modified_schema, tables),
                 )
-                writers_by_conn[conn.pk] = db_writers(cursor, conn.modified_schema, project.database.user)
+            # Writers are best-effort: a catalogue quirk here must not take the
+            # versions and counts, which decide health, down with it.
+            for conn in connections:
+                try:
+                    writers_by_conn[conn.pk] = db_writers(cursor, conn.modified_schema, project.database.user)
+                except Exception as exc:  # noqa: BLE001
+                    writers_error = f"writers: {exc}"
+                    writers_by_conn[conn.pk] = None
+                    db.rollback()
     except Exception as exc:  # noqa: BLE001
         db_error = f"database: {exc}"
 
@@ -215,6 +228,7 @@ def gather(project, connections) -> dict:
         if not errors and obs.db_version is None:
             errors.append(f"base schema {conn.base_schema} has no db-sync comment yet")
         obs.error = "; ".join(errors)
+        obs.warning = writers_error
     return observed
 
 
@@ -222,9 +236,12 @@ def gather(project, connections) -> dict:
 
 
 def direction_of(permission, writers):
+    """writers None means unknown: a Reader account then gets no verdict."""
     if permission in ("writer", "owner"):
         return Direction.TWO_WAY
     if permission == "reader":
+        if writers is None:
+            return None
         return Direction.DB_EDITS_CANNOT_PUSH if writers else Direction.ONE_WAY
     return None
 
@@ -252,7 +269,8 @@ def evaluate(status, obs, *, now, check_interval, stuck_after, process_running, 
         # A recent good check exists: keep what it said.
         return None, conditions, messages
 
-    status.check_error = ""
+    # A best-effort part may have failed; shown on the page, but this check counts.
+    status.check_error = obs.warning
     status.last_ok_check_at = now
 
     previous_local = status.local_version
@@ -270,7 +288,7 @@ def evaluate(status, obs, *, now, check_interval, stuck_after, process_running, 
     status.base_count = dict(obs.base_count)
     status.modified_count = dict(obs.modified_count)
     status.mergin_permission = obs.mergin_permission
-    status.db_writers = list(obs.db_writers)
+    status.db_writers = None if obs.db_writers is None else list(obs.db_writers)
     status.direction = direction_of(obs.mergin_permission, obs.db_writers)
 
     versions_equal = obs.local_version is not None and obs.local_version == obs.db_version
@@ -322,7 +340,7 @@ def evaluate(status, obs, *, now, check_interval, stuck_after, process_running, 
         conditions.add(key)
         messages[key] = (
             f"{label}: database edits in {', '.join(pending_tables)} can never be pushed "
-            f"(account is Reader; writers: {', '.join(obs.db_writers)})"
+            f"(account is Reader; writers: {', '.join(obs.db_writers or [])})"
         )
 
     # Stuck: server ahead, checkout not moving, daemon alive.

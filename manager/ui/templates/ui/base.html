@@ -41,6 +41,8 @@ a { color: var(--info); }
 .panel { border: 1px solid var(--line); border-radius: .4rem; padding: .8rem 1rem; margin: .5rem 0; background: var(--panel); }
 .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: .8rem; }
 pre { background: var(--panel); border: 1px solid var(--line); border-radius: .4rem; padding: .6rem; overflow: auto; max-height: 28rem; font-size: .8rem; white-space: pre-wrap; margin: 0; }
+.logbox { height: 28rem; overflow: auto; border: 1px solid var(--line); border-radius: .4rem; background: var(--panel); }
+.logbox pre { border: 0; max-height: none; overflow: visible; }
 button, .button { font: inherit; padding: .35rem .8rem; border: 1px solid var(--line); border-radius: .3rem; background: var(--panel); color: var(--fg); cursor: pointer; text-decoration: none; }
 button[disabled] { opacity: .5; cursor: not-allowed; }
 form.inline { display: inline; margin-right: .4rem; }

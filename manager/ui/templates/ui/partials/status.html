@@ -36,10 +36,10 @@
         {% if status.interrupted_pull %}<span class="badge warn">database behind checkout</span>{% endif %}</dd>
       <dt>Direction</dt><dd>{% if status.direction %}<span class="badge {{ status.direction|badge }}">{{ status.get_direction_display }}</span>{% else %}<span class="muted">unknown</span>{% endif %}
         <span class="muted">· Mergin permission: {{ status.mergin_permission|default:"unknown" }}
-        · other writers: {% if status.db_writers %}{{ status.db_writers|join:", " }}{% else %}none found{% endif %}</span></dd>
+        · other writers: {% if status.db_writers is None %}could not be determined{% elif status.db_writers %}{{ status.db_writers|join:", " }}{% else %}none found (superusers not listed){% endif %}</span></dd>
       <dt>Checked</dt><dd>{% if status.checked_at %}{{ status.checked_at|date:"Y-m-d H:i:s" }}{% else %}never{% endif %}
         {% if status.last_pull_at %}<span class="muted">· last pull seen {{ status.last_pull_at|date:"Y-m-d H:i" }}</span>{% endif %}</dd>
-      {% if status.check_error %}<dt>Check error</dt><dd class="notice bad">{{ status.check_error }}</dd>{% endif %}
+      {% if status.check_error %}<dt>Check</dt><dd class="notice {% if not status.last_ok_check_at or status.last_ok_check_at != status.checked_at %}bad{% endif %}">{{ status.check_error }}</dd>{% endif %}
     </dl>
     {% if status.table_rows %}
     <table style="margin-top:.5rem">

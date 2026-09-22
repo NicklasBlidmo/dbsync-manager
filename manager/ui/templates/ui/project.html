@@ -8,10 +8,23 @@
   {% include "ui/partials/status.html" %}
 </div>
 
-<h2>Log <span class="muted">(last {{ log_tail|length|default:0 }} chars of dbsync.log, live)</span></h2>
-<div id="log" hx-get="{% url 'project_log' project.pk %}" hx-trigger="every 10s" hx-swap="innerHTML">
+<h2>Log <span class="muted">(tail of dbsync.log, live; stays where you scrolled unless you are at the end)</span></h2>
+<div id="log" class="logbox" hx-get="{% url 'project_log' project.pk %}" hx-trigger="every 10s" hx-swap="innerHTML">
   {% include "ui/partials/log.html" %}
 </div>
+<script>
+(function () {
+  // #log is the scroll container. Replacing its content resets the scroll
+  // position; keep following the end only if the reader was already there.
+  var box = document.getElementById("log");
+  var atEnd = true;
+  function nearEnd(el) { return el.scrollHeight - el.scrollTop - el.clientHeight < 8; }
+  function toEnd(el) { el.scrollTop = el.scrollHeight; }
+  toEnd(box);
+  box.addEventListener("htmx:beforeSwap", function () { atEnd = nearEnd(box); });
+  box.addEventListener("htmx:afterSwap", function () { if (atEnd) toEnd(box); });
+})();
+</script>
 
 <h2>Events <span class="muted">(last 50)</span></h2>
 <table>

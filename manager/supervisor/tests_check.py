@@ -212,3 +212,24 @@ class MerginApiParsingTests(SimpleTestCase):
         self.assertEqual(mergin_api.permission({"permissions": {"upload": True}}), "writer")
         self.assertEqual(mergin_api.permission({"permissions": {"upload": False}}), "reader")
         self.assertIsNone(mergin_api.permission({}))
+
+
+class BestEffortWritersTests(SimpleTestCase):
+    def test_writers_failure_does_not_fail_the_check(self):
+        h = Harness()
+        health, conds, _ = h.check(observed(db_writers=None, warning="writers: ACL arrays must be one-dimensional"), 0)
+        self.assertEqual((health, conds), (H.OK, set()))
+        self.assertEqual(h.status.server_version, 10)
+        self.assertEqual(h.status.mergin_permission, "reader")
+        self.assertIsNone(h.status.db_writers)
+        self.assertIsNone(h.status.direction)            # Reader with unknown writers: no verdict
+        self.assertEqual(h.status.check_error, "writers: ACL arrays must be one-dimensional")
+        self.assertEqual(h.status.last_ok_check_at, at(0))
+        # With writers known again the note clears and the verdict returns.
+        health, _, _ = h.check(observed(), 5)
+        self.assertEqual(h.status.check_error, "")
+        self.assertEqual(h.status.direction, D.ONE_WAY)
+
+    def test_owner_is_two_way_even_with_unknown_writers(self):
+        self.assertEqual(direction_of("owner", None), D.TWO_WAY)
+        self.assertIsNone(direction_of("reader", None))

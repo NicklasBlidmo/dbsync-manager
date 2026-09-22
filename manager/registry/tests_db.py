@@ -75,3 +75,37 @@ class ConstraintTests(TestCase):
         # A closed one does not block.
         Operation.objects.filter(project=self.project).update(status="done")
         Operation.objects.create(project=self.project, kind="reinit", status="pending")
+
+
+@tag("db")
+class WritersQueryTests(TestCase):
+    """db_writers against real catalogue state (field finding 2026-09-22b):
+    a table without any grant has relacl NULL, the normal case after init."""
+
+    def setUp(self):
+        from django.db import connection
+
+        self.cursor = connection.cursor()
+        self.cursor.execute("CREATE SCHEMA writers_test")
+        self.cursor.execute("CREATE TABLE writers_test.t (id int)")
+        self.addCleanup(lambda: self.cursor.execute("DROP SCHEMA writers_test CASCADE"))
+        self.cursor.execute("SELECT current_user")
+        self.me = self.cursor.fetchone()[0]
+
+    def writers(self, sync_role):
+        from supervisor.check import db_writers
+
+        return db_writers(self.cursor, "writers_test", sync_role)
+
+    def test_table_without_grants_has_no_other_writers(self):
+        self.assertEqual(self.writers(self.me), [])
+
+    def test_owner_counts_as_a_writer_when_not_the_sync_role(self):
+        self.assertEqual(self.writers("someone_else"), [self.me])
+
+    def test_public_grant_is_reported(self):
+        self.cursor.execute("GRANT INSERT ON writers_test.t TO PUBLIC")
+        self.assertEqual(self.writers(self.me), ["PUBLIC"])
+        self.cursor.execute("REVOKE INSERT ON writers_test.t FROM PUBLIC")
+        self.cursor.execute("GRANT SELECT ON writers_test.t TO PUBLIC")
+        self.assertEqual(self.writers(self.me), [])
