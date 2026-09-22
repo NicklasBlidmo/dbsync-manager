@@ -226,6 +226,9 @@ class MerginApiParsingTests(SimpleTestCase):
         self.assertEqual(mergin_api.permission(item, "bo"), "reader")
         self.assertEqual(mergin_api.permission(item, "workspace-owner-not-listed"), "writer")  # flags fallback
         self.assertEqual(mergin_api.permission(item), "writer")
+        self.assertEqual(mergin_api.permission_with_source(item, "nicke"), ("owner", "access"))
+        self.assertEqual(mergin_api.permission_with_source(item, "someone"), ("writer", "flags"))
+        self.assertEqual(mergin_api.permission_with_source({"role": "owner"}, "x"), ("owner", "role"))
 
 
 class BestEffortWritersTests(SimpleTestCase):

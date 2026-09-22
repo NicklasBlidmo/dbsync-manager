@@ -51,40 +51,44 @@ def version_number(info: dict):
     return None
 
 
-def permission(info: dict, username: str | None = None):
-    """The account's permission on the project: reader, writer, owner or None.
+def permission_with_source(info: dict, username: str | None = None):
+    """(permission, source): permission is reader, writer, owner or None.
 
     Three sources, in order of precision:
-    1. `role`, which project_info reports for the calling user;
-    2. the project's `access` name lists, when `username` is given (the
-       paginated project list has no `role`, but does list owners, writers,
-       editors and readers by name);
-    3. the `permissions` flags, where `upload` means it can push, which
-       cannot tell an owner from a writer.
+    - "role": `role`, which project_info reports for the calling user;
+    - "access": the project's `access` name lists, when `username` is
+      given (the paginated project list has no `role`, but may list
+      owners, writers, editors and readers by name);
+    - "flags": the `permissions` flags, where `upload` means it can push.
+      This cannot tell an owner from a writer, nor see a role held through
+      the workspace; callers that display it should say "can push".
     `editor` (servers from 2024.4) can push and is treated as writer.
     """
     if not isinstance(info, dict):
-        return None
+        return None, None
     role = info.get("role")
     if isinstance(role, str):
         role = role.lower()
         if role == "editor":
-            return "writer"
+            return "writer", "role"
         if role in ("reader", "writer", "owner"):
-            return role
+            return role, "role"
     access = info.get("access")
     if username and isinstance(access, dict):
         for key, value in (("ownersnames", "owner"), ("writersnames", "writer"),
                            ("editorsnames", "writer"), ("readersnames", "reader")):
             names = access.get(key) or []
             if username in names:
-                return value
+                return value, "access"
     perms = info.get("permissions")
     if isinstance(perms, dict):
-        if perms.get("upload"):
-            return "writer"
-        return "reader"
-    return None
+        return ("writer" if perms.get("upload") else "reader"), "flags"
+    return None, None
+
+
+def permission(info: dict, username: str | None = None):
+    """The account's permission on the project: reader, writer, owner or None."""
+    return permission_with_source(info, username)[0]
 
 
 # --- wizard helpers (design §9) --------------------------------------------
@@ -116,12 +120,17 @@ def search_projects(account, workspace: str, text: str = "", limit: int = 50) ->
         raise
     result = []
     for item in page.get("projects", []) if isinstance(page, dict) else []:
+        perm, source = permission_with_source(item, account.username)
         result.append({
             "path": f"{item.get('namespace')}/{item.get('name')}",
             "name": item.get("name"),
             "version": version_number(item),
             "updated": item.get("updated"),
-            "permission": permission(item, account.username),
+            "permission": perm,
+            # What the list can honestly say: a role, or only whether it can push.
+            "permission_label": perm if source in ("role", "access") else (
+                {"writer": "can push", "reader": "read-only"}.get(perm, "none")
+            ),
         })
     return result
 
