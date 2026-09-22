@@ -209,9 +209,23 @@ class MerginApiParsingTests(SimpleTestCase):
         self.assertIsNone(mergin_api.version_number({"version": "x"}))
         self.assertIsNone(mergin_api.version_number({}))
         self.assertEqual(mergin_api.permission({"role": "Reader"}), "reader")
+        self.assertEqual(mergin_api.permission({"role": "editor"}), "writer")
         self.assertEqual(mergin_api.permission({"permissions": {"upload": True}}), "writer")
         self.assertEqual(mergin_api.permission({"permissions": {"upload": False}}), "reader")
         self.assertIsNone(mergin_api.permission({}))
+
+    def test_project_list_items_use_access_names_before_flags(self):
+        # The paginated project list has no `role`; an owner would otherwise
+        # show as writer (field finding 2026-09-22 on NicklasBlidmo/p3922_test).
+        item = {
+            "permissions": {"upload": True},
+            "access": {"ownersnames": ["nicke"], "writersnames": ["anna"], "readersnames": ["bo"]},
+        }
+        self.assertEqual(mergin_api.permission(item, "nicke"), "owner")
+        self.assertEqual(mergin_api.permission(item, "anna"), "writer")
+        self.assertEqual(mergin_api.permission(item, "bo"), "reader")
+        self.assertEqual(mergin_api.permission(item, "workspace-owner-not-listed"), "writer")  # flags fallback
+        self.assertEqual(mergin_api.permission(item), "writer")
 
 
 class BestEffortWritersTests(SimpleTestCase):

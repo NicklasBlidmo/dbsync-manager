@@ -68,3 +68,53 @@ provoking on the clone before the Bönsta takeover.
   single line in a smaller font, or shown on hover.
 - "(superusers not listed)" repeated on every card is noise once read;
   once in the page header is enough.
+
+## `db_behind` provoked on the clone (22:06–22:15)
+
+Method: a BEFORE INSERT trigger on the **base** table
+`p3922_test_b_1_punkter."1-punkter"` raising on `Beskrivning = 'db_behind'`,
+then one such point added in the app (v8). The base table was chosen over
+modified on purpose: with an owner account a failure on modified leaves
+modified ≠ base, and db-sync's next cycle pushes that difference (a deletion
+of the new point) to Mergin within seconds, which both destroys data and
+resolves the condition before the check can see it. The POC survived that
+only because its account was Reader (403).
+
+Observed, all as the rules assume:
+- `dbsync.log`: `pull finished -- at version v8`, then `GEODIFF: Error:
+  postgres cmd error(P0001) ... provoked apply failure`, `geodiff failed!`
+  on the base apply; the daemon kept running and logged nothing further
+  about it. Base comment stayed at v7, `.mergin/mergin.json` at v8, counts
+  604 / 603 / 603.
+- Project page two check intervals later (`DBSYNC_CHECK_INTERVAL=60`):
+  `health: behind`, condition `db_behind (1-punkter.gpkg)`, card marked
+  "database behind checkout". "active since" shows
+  `local_version_changed_at` (22:07:58), i.e. how long the database has
+  been behind, not when the alert was raised (22:09:58); keep it that way.
+- After dropping the trigger db-sync did **not** catch up by itself (F2).
+
+**Recovery: pause → resume was enough.** On start db-sync runs its init,
+which downloads the project *at the version in the base comment* (log:
+`start download ... got project info. version v7`), compares base with that
+GeoPackage, and then pulls v7 → v8 again. Comment v8, counts 604/604/604,
+`resolved: db_behind:1-punkter.gpkg` at the next check. No schema was
+dropped. This was suspected in the POC runbook ("test utan ominitiering")
+and is now confirmed against db-sync 2.3.0.
+
+Consequences for the design:
+- §6: `db_behind` gets the same first response as `stuck`: the supervisor
+  restarts the daemon once, and only raises the condition if the database
+  is still behind after the restart and two more checks. Most interrupted
+  pulls (a transient database error, a restart mid-apply) then heal without
+  a person. A trigger that fails deterministically, as here, still ends in
+  the alert.
+- §9/§14 (operations slice): re-init is for the cases a restart cannot fix
+  (base no longer matches any Mergin version, schemas dropped), and the UI
+  should say "try resume first" on a `db_behind` project.
+- §13: add this provocation as the integration test for `db_behind`, with
+  the base-table trigger and the pause/resume recovery as expected outcome.
+
+Cleanup done: trigger and function dropped; `ak_gis` grants on
+`p3922_test_s_1_polygoner` revoked after the QGIS test (T2 via the
+manager, v7). `DBSYNC_CHECK_INTERVAL` is still 60 on the server for the
+remaining provocations; back to 300 afterwards.

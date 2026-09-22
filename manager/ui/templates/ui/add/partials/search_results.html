@@ -2,7 +2,7 @@
 {% elif not workspace %}<p class="muted">Choose a workspace to list its projects.</p>
 {% else %}
 <table>
-  <thead><tr><th>Project</th><th class="num">Version</th><th>Updated</th><th>Account's permission</th><th></th></tr></thead>
+  <thead><tr><th>Project</th><th class="num">Version</th><th>Updated</th><th title="From the project list; verified against the project itself in the next step">Account's permission</th><th></th></tr></thead>
   <tbody>
   {% for p in results %}
     <tr>

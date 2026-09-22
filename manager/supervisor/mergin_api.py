@@ -51,13 +51,17 @@ def version_number(info: dict):
     return None
 
 
-def permission(info: dict):
+def permission(info: dict, username: str | None = None):
     """The account's permission on the project: reader, writer, owner or None.
 
-    The API reports `role` for the calling user on newer servers; older ones
-    only give the `permissions` flags, where `upload` means it can push.
-    Servers from 2024.4 also have `editor`, which can push and is treated
-    as writer here.
+    Three sources, in order of precision:
+    1. `role`, which project_info reports for the calling user;
+    2. the project's `access` name lists, when `username` is given (the
+       paginated project list has no `role`, but does list owners, writers,
+       editors and readers by name);
+    3. the `permissions` flags, where `upload` means it can push, which
+       cannot tell an owner from a writer.
+    `editor` (servers from 2024.4) can push and is treated as writer.
     """
     if not isinstance(info, dict):
         return None
@@ -68,6 +72,13 @@ def permission(info: dict):
             return "writer"
         if role in ("reader", "writer", "owner"):
             return role
+    access = info.get("access")
+    if username and isinstance(access, dict):
+        for key, value in (("ownersnames", "owner"), ("writersnames", "writer"),
+                           ("editorsnames", "writer"), ("readersnames", "reader")):
+            names = access.get(key) or []
+            if username in names:
+                return value
     perms = info.get("permissions")
     if isinstance(perms, dict):
         if perms.get("upload"):
@@ -110,7 +121,7 @@ def search_projects(account, workspace: str, text: str = "", limit: int = 50) ->
             "name": item.get("name"),
             "version": version_number(item),
             "updated": item.get("updated"),
-            "permission": permission(item),
+            "permission": permission(item, account.username),
         })
     return result
 
