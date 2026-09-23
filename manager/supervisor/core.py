@@ -363,7 +363,7 @@ class Supervisor:
             prev = rt.last_post_pull_version if kind == "post_pull" else None
             _, result = hooks.run_hook(
                 project, hook, kind, db_version=db_version, prev_db_version=prev,
-                requested_by=(run.summary or {}).get("requested_by"), run=run,
+                requested_by=(run.summary or {}).get("requested_by"), run=run, trigger="manual",
             )
             if kind == "post_init" and result.ok and project.post_init_ok_at is None:
                 self._mark_post_init_ok(project)

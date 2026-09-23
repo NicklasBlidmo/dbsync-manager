@@ -14,8 +14,9 @@ ARG S6_ARCH=x86_64
 # --- system: s6-overlay (two processes in one container), psql for hooks ---
 ADD https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}/s6-overlay-noarch.tar.xz /tmp/
 ADD https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}/s6-overlay-${S6_ARCH}.tar.xz /tmp/
+# gdal-bin: ogr2ogr for hooks that import lookup tables (§8, §11)
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends xz-utils postgresql-client \
+    && apt-get install -y --no-install-recommends xz-utils postgresql-client gdal-bin \
     && rm -rf /var/lib/apt/lists/* \
     && tar -C / -Jxpf /tmp/s6-overlay-noarch.tar.xz \
     && tar -C / -Jxpf /tmp/s6-overlay-${S6_ARCH}.tar.xz \

@@ -95,6 +95,25 @@ CREATE SCHEMA dbsync_manager AUTHORIZATION dbsync_manager;
 All manager tables, Django's own included, live in that schema. Nothing is
 created in `public` or in synced schemas.
 
+### Hooks and the organisation's scripts
+
+Hooks run inside the container (design §8). Scripts that live outside the
+image are bind-mounted read-only through a server-local
+`docker-compose.override.yml` (ignored by git):
+
+```yaml
+services:
+  manager:
+    volumes:
+      - /opt/ak-db:/opt/ak-db:ro
+```
+
+A hook command then reads them, e.g. `SQLDIR=/opt/ak-db/sql
+/opt/ak-db/run_sql.sh "$DBSYNC_SCHEMA_PREFIX" all`. `psql` and `ogr2ogr`
+are in the image. A hook that needs more privileges than the sync role
+(views, grants, `pg_dump`) gets its own "run as" database connection in
+the admin; `DBSYNC_SYNC_ROLE` tells the script which role to grant to.
+
 ### E-mail
 
 Alerts go out through whatever `SMTP_*` in `.env` points at. With

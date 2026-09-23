@@ -70,10 +70,19 @@ def mask(text: str, secrets) -> str:
     return text
 
 
+def run_as(project, hook):
+    """The database row whose credentials the hook runs with (§8)."""
+    return hook.database or project.database
+
+
 def hook_environment(project, connections, event_kind, *, work_dir, pgpass_path,
-                     db_version=None, prev_db_version=None) -> dict:
-    """The documented environment (§8), on top of the supervisor's own."""
-    database = project.database
+                     db_version=None, prev_db_version=None, database=None) -> dict:
+    """The documented environment (§8), on top of the supervisor's own.
+
+    `database` is the connection the hook runs as; PG* point at it. The
+    sync role's name is passed separately so grants can target it.
+    """
+    database = database or project.database
     env = dict(os.environ)
     env.update({
         "DBSYNC_PROJECT": project.mergin_project,
@@ -84,6 +93,7 @@ def hook_environment(project, connections, event_kind, *, work_dir, pgpass_path,
         "DBSYNC_WORK_DIR": str(work_dir),
         "DBSYNC_EVENT": event_kind,
         "DBSYNC_DB_VERSION": "" if db_version is None else str(db_version),
+        "DBSYNC_SYNC_ROLE": project.database.user,
         "PGHOST": database.host,
         "PGPORT": str(database.port),
         "PGDATABASE": database.dbname,
@@ -142,16 +152,24 @@ def execute(command: str, *, cwd, env, timeout_s: int) -> HookResult:
 
 
 def run_hook(project, hook, event_kind, *, connections=None, db_version=None, prev_db_version=None,
-             requested_by=None, run=None) -> tuple:
-    """Run `hook` for `project`; return (SyncRun, HookResult). Never raises for a failing hook."""
+             requested_by=None, run=None, trigger="auto") -> tuple:
+    """Run `hook` for `project`; return (SyncRun, HookResult). Never raises for a failing hook.
+
+    `trigger` records which path ran it: "auto" (after init, post_pull, an
+    operation) or "manual" ("Run hook now"). The caller decides what a
+    failure means; a manual run never blocks a project (§8).
+    """
     connections = list(connections if connections is not None else project.connections.all())
     work_dir = settings.DBSYNC_DATA_DIR / "projects" / str(project.pk)
     pgpass_path = work_dir / PGPASS_NAME
+    database = run_as(project, hook)
 
     summary = {
         "hook": hook.name,
         "hook_kind": hook.kind,
         "event": event_kind,
+        "trigger": trigger,
+        "run_as": database.user,
         "status": "running",
         "db_version": db_version,
         "requested_by": requested_by,
@@ -165,10 +183,11 @@ def run_hook(project, hook, event_kind, *, connections=None, db_version=None, pr
         run.save()
 
     secrets = []
-    try:
-        secrets.append(project.database.password)
-    except Exception:  # noqa: BLE001 - masking is best effort if the key is gone
-        pass
+    for row in {project.database.pk: project.database, database.pk: database}.values():
+        try:
+            secrets.append(row.password)
+        except Exception:  # noqa: BLE001 - masking is best effort if the key is gone
+            pass
     try:
         secrets.append(project.mergin_account.secret)
     except Exception:  # noqa: BLE001
@@ -178,10 +197,10 @@ def run_hook(project, hook, event_kind, *, connections=None, db_version=None, pr
     try:
         fd = os.open(pgpass_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(pgpass_line(project.database))
+            handle.write(pgpass_line(database))
         env = hook_environment(
             project, connections, event_kind, work_dir=work_dir, pgpass_path=pgpass_path,
-            db_version=db_version, prev_db_version=prev_db_version,
+            db_version=db_version, prev_db_version=prev_db_version, database=database,
         )
         result = execute(hook.command, cwd=work_dir, env=env, timeout_s=hook.timeout_s)
     except Exception as exc:  # noqa: BLE001 - e.g. /bin/sh missing; recorded, not raised
@@ -230,7 +249,7 @@ def request_run(project, hook, user):
     return SyncRun.objects.create(
         project=project, kind=SyncRun.Kind.HOOK,
         summary={"hook": hook.name, "hook_kind": hook.kind, "event": hook.kind, "status": "requested",
-                 "requested_by": user.get_username() if user else None},
+                 "trigger": "manual", "requested_by": user.get_username() if user else None},
     )
 
 

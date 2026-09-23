@@ -129,6 +129,14 @@ class Hook(OwnedModel):
     kind = models.CharField(max_length=20, choices=Kind.choices)
     command = models.TextField(help_text="Run with sh -c inside the container; must be idempotent (design §8).")
     timeout_s = models.PositiveIntegerField(default=600)
+    # The hook carries the organisation's privileges (views, grants,
+    # pg_dump) while the sync role keeps the minimum (§8). Empty = run
+    # with the project's own sync database row.
+    database = models.ForeignKey(
+        Database, null=True, blank=True, on_delete=models.PROTECT, related_name="hooks",
+        verbose_name="run as (database connection)",
+        help_text="Connection the hook's PG* variables and pgpass use. Leave empty to use the project's sync connection.",
+    )
 
     class Meta:
         ordering = ["kind", "name"]

@@ -57,6 +57,19 @@ class PureHookTests(SimpleTestCase):
         env = hooks.hook_environment(project, conns, "post_pull", work_dir="/w", pgpass_path="/p", db_version=43, prev_db_version=42)
         self.assertEqual(env["DBSYNC_PREV_DB_VERSION"], "42")
 
+    def test_hook_runs_as_its_own_database_row_when_set(self):
+        project, conns = project_with_hook()
+        admin_db = Database(pk=2, name="ak (admin)", host="db.example", port=5433, dbname="ak", user="ak_admin")
+        admin_db.password = "admin-pw"
+        hook = Hook(pk=3, name="grants", kind="post_init", command="true", database=admin_db)
+        self.assertIs(hooks.run_as(project, hook), admin_db)
+        self.assertIs(hooks.run_as(project, Hook(pk=4, name="x", kind="post_init", command="true")), project.database)
+        env = hooks.hook_environment(project, conns, "post_init", work_dir="/w", pgpass_path="/p",
+                                     database=hooks.run_as(project, hook))
+        self.assertEqual(env["PGUSER"], "ak_admin")
+        self.assertEqual(env["DBSYNC_SYNC_ROLE"], "ak_dbsync")   # grants target the sync role
+        self.assertEqual(hooks.pgpass_line(admin_db), "db.example:5433:ak:ak_admin:admin-pw\n")
+
     def test_pgpass_line_escapes_colons_and_backslashes(self):
         project, _ = project_with_hook()
         self.assertEqual(hooks.pgpass_line(project.database), "db.example:5433:ak:ak_dbsync:db\\:pass\\\\word\n")

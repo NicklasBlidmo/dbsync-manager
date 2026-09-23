@@ -96,10 +96,11 @@ class DatabaseAdmin(OwnedAdmin):
 
 @admin.register(Hook)
 class HookAdmin(OwnedAdmin):
-    list_display = ["name", "kind", "timeout_s", "created_by", "created_at"]
-    list_filter = ["kind"]
+    list_display = ["name", "kind", "database", "timeout_s", "created_by", "created_at"]
+    list_filter = ["kind", "database"]
     search_fields = ["name", "command"]
     readonly_fields = ["created_by", "created_at"]
+    fields = ["name", "kind", "command", "timeout_s", "database", "created_by", "created_at"]
 
 
 class SyncConnectionInline(admin.TabularInline):

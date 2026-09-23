@@ -168,6 +168,13 @@ def _hooks_context(project):
     for run in runs:
         summary = run.summary or {}
         run.label = f"{summary.get('event', summary.get('hook_kind', '?'))} · {summary.get('hook', '?')}"
+        trigger = summary.get("trigger", "manual" if summary.get("requested_by") else "auto")
+        if trigger == "manual":
+            run.path = f"requested by {summary.get('requested_by') or '?'} (never blocks)"
+        else:
+            run.path = {"post_init": "after init (blocks on failure)", "post_pull": "after pull",
+                        "pre_remove": "operation"}.get(summary.get("event"), "automatic")
+        run.run_as = summary.get("run_as", "")
         run.status_text = summary.get("status", "")
         if run.finished_at is None:
             run.state = "requested" if summary.get("status") == "requested" else "running"

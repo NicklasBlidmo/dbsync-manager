@@ -683,6 +683,15 @@ tool. Contract:
   the run). **The password is never in the environment**, so `env`, `set`
   or a crashing script that dumps its environment cannot leak it, and `psql`
   and libpq-based tools pick it up without any handling in the hook.
+- **Which role runs the hook** (decided 2026-09-23 after the first field
+  test): a hook has an optional `database` of its own. If set, `PG*` and
+  the pgpass file use that connection; if not, the project's sync
+  connection. The organisation's `post_init` creates views, functions and
+  grants in schemas the sync role must not own, and `pre_remove` runs
+  `pg_dump`, so those hooks carry an admin connection while the sync role
+  keeps the minimum (§12). `DBSYNC_SYNC_ROLE` names the sync role so a
+  grants script can target it. The hook table shows which role each run
+  used.
 - **Idempotent by contract.** A hook may be run more than once for the same
   event (operator "run hook now", a retry after timeout, a container restart
   in the middle of a run). Scripts must use `CREATE ... IF NOT EXISTS`,
@@ -700,14 +709,20 @@ tool. Contract:
   contract says not to print connection strings at all.
 - Timeout per hook (default 600 s). On timeout the process group is killed
   and the run is recorded as failed.
-- Exit code 0 = ok. Non-zero or timeout = `event(error)` and:
-  - `post_init`: the project does **not** go to `running`. The supervisor
-    stops the child and sets `process_state = blocked` with reason
-    "post_init failed"; `post_init_ok_at` stays null.
+- Exit code 0 = ok. Non-zero or timeout = `event(error)` and, for the
+  **automatic** runs (after init, after a pull, inside an operation):
+  - `post_init` after init: the project does **not** go to `running`. The
+    supervisor stops the child and sets `process_state = blocked` with
+    reason "post_init failed"; `post_init_ok_at` stays null.
     A post_init hook typically creates the grants, views and validation the
     organisation depends on, and a sync running without them is worse than a
     sync that waits. The operator fixes the cause and uses "run hook now";
     on success the project starts.
+  - A **manual** run ("Run hook now") is a repair action: it never blocks a
+    working project, and a successful manual `post_init` is what sets
+    `post_init_ok_at` and unblocks a blocked one. Each row in the hook
+    table says which path ran it: "after init (blocks on failure)",
+    "after pull", "operation", or "requested by <user> (never blocks)".
   - `pre_remove`: the remove or re-init operation stops at that step
     (`status = failed`, §6 "Operations") before anything destructive.
     Schemas are not dropped; the operator retries or cancels. An archive
@@ -1016,9 +1031,11 @@ tested); (4) add wizard (moved up from last place on 2026-09-22, so no
 further project is added with hand-written schema names; done and
 field-tested 2026-09-22: workspace list, project search, file list and
 derived names against the real server, and the full db-tagged suite of
-86 tests green on the server); (5) hooks and alerts (code 2026-09-23,
-field test pending: the post_init gate and the alert mail against the
-real SMTP); (6) remove and re-init
+86 tests green on the server); (5) hooks and alerts (done and
+field-tested 2026-09-23: manual and automatic post_init paths, the block
+and unblock, pgpass through psql, alert and resolved mails through
+Microsoft 365 direct send; post_pull and the timeout not yet exercised);
+(6) remove and re-init
 as operations; (7) log history. The JSON API is added when `akdb project
 close` needs it.
 v1.1: OIDC login; per-project notification channels beyond e-mail (webhook);
