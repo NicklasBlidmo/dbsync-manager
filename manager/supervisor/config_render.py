@@ -85,7 +85,8 @@ def render_config(project, connections, account, database, work_dir) -> str:
 
     document = {
         "mergin": {"url": account.url, "username": account.username, "password": mergin_secret},
-        "init_from": project.init_from,
+        # str(): a TextChoices member on an unsaved instance is not plain YAML.
+        "init_from": str(project.init_from),
         "working_dir": str(Path(work_dir) / WORKING_SUBDIR),
         "connections": entries,
         "daemon": {"sleep_time": int(project.sleep_time)},

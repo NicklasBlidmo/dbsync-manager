@@ -131,6 +131,7 @@ def project_detail(request, pk):
     context["events"] = project.events.select_related("user").order_by("-at")[:EVENTS_ON_PAGE]
     context["can_operate"] = request.user.has_perm("registry.change_syncproject")
     context.update(_log_context(project))
+    context.update(_hooks_context(project))
     return render(request, "ui/project.html", context)
 
 
@@ -154,6 +155,57 @@ def _log_context(project):
 def project_log(request, pk):
     project = get_object_or_404(SyncProject, pk=pk)
     return render(request, "ui/partials/log.html", _log_context(project))
+
+
+HOOK_KINDS = ("post_init", "pre_remove", "post_pull")
+
+
+def _hooks_context(project):
+    from registry.models import SyncRun
+
+    configured = [(kind, getattr(project, f"{kind}_hook")) for kind in HOOK_KINDS]
+    runs = list(project.runs.filter(kind=SyncRun.Kind.HOOK).order_by("-started_at")[:10])
+    for run in runs:
+        summary = run.summary or {}
+        run.label = f"{summary.get('event', summary.get('hook_kind', '?'))} · {summary.get('hook', '?')}"
+        run.status_text = summary.get("status", "")
+        if run.finished_at is None:
+            run.state = "requested" if summary.get("status") == "requested" else "running"
+        elif run.ok:
+            run.state = "ok"
+        elif summary.get("timed_out"):
+            run.state = "timed out"
+        else:
+            run.state = f"failed (exit {summary.get('exit_code')})"
+        run.output = "\n".join(part for part in (summary.get("stdout", ""), summary.get("stderr", "")) if part)
+        run.duration = summary.get("duration_s")
+        run.requested_by = summary.get("requested_by")
+    return {"project": project, "hooks": [(k, h) for k, h in configured if h], "hook_runs": runs}
+
+
+@login_required
+def project_hooks(request, pk):
+    project = get_object_or_404(SyncProject, pk=pk)
+    context = _hooks_context(project)
+    context["can_operate"] = request.user.has_perm("registry.change_syncproject")
+    return render(request, "ui/partials/hooks.html", context)
+
+
+@login_required
+@permission_required("registry.change_syncproject", raise_exception=True)
+@require_POST
+def project_run_hook(request, pk):
+    from supervisor import hooks as hook_runner
+
+    project = get_object_or_404(SyncProject, pk=pk, removed_at__isnull=True)
+    kind = request.POST.get("kind", "")
+    hook = getattr(project, f"{kind}_hook", None) if kind in HOOK_KINDS else None
+    if hook is None:
+        return HttpResponseBadRequest("no such hook on this project")
+    hook_runner.request_run(project, hook, request.user)
+    events.record(project, Event.Level.INFO, f"{request.user.get_username()} requested the {kind} hook '{hook.name}'",
+                  source=Event.Source.USER, user=request.user)
+    return redirect("project", pk=project.pk)
 
 
 ACTIONS = {

@@ -714,6 +714,12 @@ tool. Contract:
     that failed must never be followed by a drop.
   - `post_pull`: logged, nothing else changes.
 
+"Run hook now" from the project page creates a `sync_run` row (kind
+`hook`, `summary.status = requested`) that the supervisor executes on its
+next tick with the current `db_version`; the web process never runs a
+hook itself. A successful post_init run this way sets `post_init_ok_at`
+and a blocked project starts on the following tick.
+
 `post_init` is where views, grants, indexes and lookup imports belong.
 `pre_remove` is where you dump or archive. `post_pull` is for lightweight
 things (refresh a materialized view, ping a QA system). Its promise is
@@ -1010,7 +1016,9 @@ tested); (4) add wizard (moved up from last place on 2026-09-22, so no
 further project is added with hand-written schema names; done and
 field-tested 2026-09-22: workspace list, project search, file list and
 derived names against the real server, and the full db-tagged suite of
-86 tests green on the server); (5) hooks and alerts; (6) remove and re-init
+86 tests green on the server); (5) hooks and alerts (code 2026-09-23,
+field test pending: the post_init gate and the alert mail against the
+real SMTP); (6) remove and re-init
 as operations; (7) log history. The JSON API is added when `akdb project
 close` needs it.
 v1.1: OIDC login; per-project notification channels beyond e-mail (webhook);

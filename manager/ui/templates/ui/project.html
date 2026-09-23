@@ -26,6 +26,11 @@
 })();
 </script>
 
+<h2>Hooks <span class="muted">(last 10 runs; output is masked and capped, design §8)</span></h2>
+<div id="hooks" hx-get="{% url 'project_hooks' project.pk %}" hx-trigger="every 15s" hx-swap="innerHTML">
+  {% include "ui/partials/hooks.html" %}
+</div>
+
 <h2>Events <span class="muted">(last 50)</span></h2>
 <table>
   <thead><tr><th>When</th><th>Level</th><th>Source</th><th>Message</th><th>Condition</th></tr></thead>

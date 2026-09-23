@@ -202,6 +202,9 @@ DBSYNC_TICK = env_int("DBSYNC_TICK", 30)
 DBSYNC_CHECK_INTERVAL = env_int("DBSYNC_CHECK_INTERVAL", 300)
 DBSYNC_STUCK_AFTER = env_int("DBSYNC_STUCK_AFTER", 1800)
 
+# Public address of the UI, for links in alert mails (optional).
+DBSYNC_BASE_URL = env("DBSYNC_BASE_URL", "")
+
 # Housekeeping.
 DBSYNC_LOG_MAX_MB = env_int("DBSYNC_LOG_MAX_MB", 20)
 DBSYNC_LOG_KEEP = env_int("DBSYNC_LOG_KEEP", 5)

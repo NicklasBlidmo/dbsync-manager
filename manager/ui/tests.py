@@ -231,3 +231,48 @@ class WizardViewTests(TestCase):
         response = self.client.post(reverse("add_create"), self.form(prefix="other", modified=["o_s_a", "o_s_b"], base=["o_b_a", "o_b_b"]))
         self.assertContains(response, "already synced into database")
         self.assertEqual(SyncProject.objects.count(), 1)
+
+
+@tag("db")
+class HookPageTests(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        from registry.models import Hook
+
+        ensure_groups()
+        cls.operator = User.objects.create_user("op2", password="pw")
+        cls.operator.groups.add(Group.objects.get(name="operator"))
+        cls.viewer = User.objects.create_user("v2", password="pw")
+        cls.viewer.groups.add(Group.objects.get(name="viewer"))
+        account = MerginAccount(name="svc2", username="svc")
+        account.secret = "pw"
+        account.save()
+        database = Database(name="gis2", host="db", dbname="ak", user="u")
+        database.password = "pw"
+        database.save()
+        cls.hook = Hook.objects.create(name="grants", kind="post_init", command="true")
+        cls.project = SyncProject.objects.create(
+            mergin_project="ak/hooked", mergin_account=account, database=database, schema_prefix="h",
+            post_init_hook=cls.hook,
+        )
+
+    def test_operator_can_request_a_run(self):
+        from registry.models import SyncRun
+
+        self.client.login(username="op2", password="pw")
+        page = self.client.get(reverse("project", args=[self.project.pk]))
+        self.assertContains(page, "Run post_init now")
+        response = self.client.post(reverse("project_run_hook", args=[self.project.pk]), {"kind": "post_init"})
+        self.assertRedirects(response, reverse("project", args=[self.project.pk]))
+        run = SyncRun.objects.get(project=self.project, kind="hook")
+        self.assertEqual(run.summary["status"], "requested")
+        self.assertEqual(run.summary["requested_by"], "op2")
+        self.assertTrue(Event.objects.filter(project=self.project, source="user", message__contains="requested the post_init hook").exists())
+        partial = self.client.get(reverse("project_hooks", args=[self.project.pk]))
+        self.assertContains(partial, "requested")
+
+    def test_unconfigured_kind_is_refused_and_viewer_forbidden(self):
+        self.client.login(username="op2", password="pw")
+        self.assertEqual(self.client.post(reverse("project_run_hook", args=[self.project.pk]), {"kind": "post_pull"}).status_code, 400)
+        self.client.login(username="v2", password="pw")
+        self.assertEqual(self.client.post(reverse("project_run_hook", args=[self.project.pk]), {"kind": "post_init"}).status_code, 403)

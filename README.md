@@ -9,7 +9,7 @@ Section numbers in code comments (§6, §8, ...) refer to it.
 
 ## Status
 
-Slice 4 of 7 (design §14). The supervisor renders db-sync's config from the
+Slice 5 of 7 (design §14). The supervisor renders db-sync's config from the
 registry, starts one daemon per project with `desired_state = running`,
 stops it on `paused`, restarts it with backoff after a crash, re-attaches to
 daemons left running by a previous supervisor, and every `DBSYNC_CHECK_INTERVAL`
@@ -24,7 +24,12 @@ GeoPackages, get schema names derived from a prefix (editable), and a
 preview that checks the target database (new schemas, adoption of an
 existing hand-run sync, or a conflict) and the resulting direction before
 anything is created. The admin form remains for edge cases.
-Not yet: hooks, e-mail alerts, remove/re-init operations, log history.
+Hooks (design §8) run inside the container with PG* variables and a per-run
+pgpass file: `post_init` gates `running`, `post_pull` runs after the check
+when the database version advanced, and any configured hook can be run
+from the project page. Alert conditions send one e-mail when they become
+active and one when they resolve, to the project's recipients.
+Not yet: remove/re-init operations (pre_remove hooks run there), log history.
 
 ## Quick start
 

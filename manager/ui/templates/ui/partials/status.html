@@ -12,8 +12,8 @@
         {% else %}
         <form class="inline" method="post" action="{% url 'project_action' project.pk 'resume' %}">{% csrf_token %}<button type="submit">Resume</button></form>
         {% endif %}
-        <button disabled title="operations slice">Re-init</button>
-        <button disabled title="operations slice">Remove</button>
+        <button disabled title="operations slice (next)">Re-init</button>
+        <button disabled title="operations slice (next)">Remove</button>
       </span>
     {% endif %}
   </p>

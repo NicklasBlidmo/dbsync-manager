@@ -7,14 +7,15 @@ active, and once more as "resolved" when it clears. In between nothing is
 written. `sync_project.active_conditions` holds the active set with the
 time each became active; the project page shows how long they have been.
 
-E-mail on raise/resolve is added in the alerts slice; it hooks into
-`activate` and `resolve` here.
+E-mail goes out from `activate` and `resolve` through supervisor.alerts.
 """
 
 from django.utils import timezone
 
 from registry import events
 from registry.models import Event, SyncProject
+
+from . import alerts
 
 # Prefixes the consistency check owns; apply() touches no other condition.
 CHECK_CONDITION_PREFIXES = ("divergence:", "db_behind", "stranded_db_edits", "stuck", "check_failed")
@@ -33,6 +34,7 @@ def activate(project, condition: str, message: str, level=Event.Level.WARNING) -
     events.record(project, level, message, condition=condition)
     active[condition] = timezone.now().isoformat(timespec="seconds")
     _save(project, active)
+    alerts.notify(project, condition, message)
     return True
 
 
@@ -40,9 +42,11 @@ def resolve(project, condition: str, message: str = "") -> bool:
     active = dict(project.active_conditions or {})
     if condition not in active:
         return False
-    events.info(project, message or f"resolved: {condition}", condition=condition)
+    text = message or f"resolved: {condition}"
+    events.info(project, text, condition=condition)
     del active[condition]
     _save(project, active)
+    alerts.notify(project, condition, text, resolved=True)
     return True
 
 

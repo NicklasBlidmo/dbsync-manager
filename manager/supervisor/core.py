@@ -26,9 +26,9 @@ from django.utils import timezone
 
 from registry import events
 from registry.crypto import SecretError
-from registry.models import Event, SyncProject
+from registry.models import Event, SyncProject, SyncRun, SyncStatus
 
-from . import check, conditions, dbinspect, processes
+from . import check, conditions, dbinspect, hooks, processes
 from .config_render import ConfigRenderError, render_config, write_config
 from .logs import rotate_if_needed, tail
 
@@ -67,8 +67,10 @@ class Runtime:
     next_start_at: float = 0.0
     last_start_at: float = 0.0
     blocked_reason: str = ""
+    block_after_exit: str = ""        # set when a failed post_init hook stops the child
     last_check_at: float = 0.0
     stuck_restart_at: float | None = None
+    last_post_pull_version: int | None = None
 
 
 class Supervisor:
@@ -210,6 +212,8 @@ class Supervisor:
         if rt.child is not None and not rt.child.alive:
             self._handle_exit(project, rt, now)
 
+        self._run_requested_hooks(project, rt)
+
         wants_running = project.desired_state == SyncProject.DesiredState.RUNNING
 
         if wants_running:
@@ -254,6 +258,15 @@ class Supervisor:
             return
         rt.blocked_reason = ""
 
+        # §6 step 1 / §8: a configured post_init hook that has not succeeded
+        # blocks the start once the schemas exist (init already happened).
+        if project.post_init_hook_id and project.post_init_ok_at is None:
+            state, _ = self._initial_state(project)
+            if state == PS.RUNNING:
+                self._set_state(project, PS.BLOCKED,
+                                "post_init hook has not succeeded; use 'Run hook now' or re-initialise")
+                return
+
         write_config(paths["config"], text)
         command = processes.daemon_command(settings.DBSYNC_DAEMON_DIR, paths["config"], paths["log"])
         child = processes.spawn(command, paths["work_dir"], paths["stderr"], paths["pidfile"], paths["config"])
@@ -291,15 +304,92 @@ class Supervisor:
         if project.process_state == PS.INITIALIZING:
             state, reason = self._initial_state(project)
             if state == PS.RUNNING:
-                # Slice 5 inserts the post_init hook here (§6 step 4).
-                self._set_state(project, PS.RUNNING, "")
                 events.info(project, "initialised: every base schema has db-sync's comment")
+                self._after_init(project, rt)
             elif reason != project.process_reason:
                 self._set_state(project, PS.INITIALIZING, reason)
         elif project.process_state not in (PS.RUNNING,):
             # e.g. adopted after a supervisor restart, or state left stale
             state, reason = self._initial_state(project)
             self._set_state(project, state, reason)
+
+    # --- step 4: post_init hook (§6, §8) --------------------------------------
+
+    def _after_init(self, project, rt):
+        """Every base schema exists: run post_init if configured, then running."""
+        hook = project.post_init_hook
+        if hook is None or project.post_init_ok_at is not None:
+            self._set_state(project, PS.RUNNING, "")
+            return
+        self._set_state(project, PS.INITIALIZING, f"running post_init hook '{hook.name}'")
+        _, result = hooks.run_hook(project, hook, "post_init", db_version=self._project_db_version(project))
+        if result.ok:
+            self._mark_post_init_ok(project)
+            self._set_state(project, PS.RUNNING, "")
+            return
+        # A sync without its grants, views and validation is worse than one
+        # that waits (§8): stop the child; _handle_exit records blocked.
+        why = "timed out" if result.timed_out else f"exit code {result.exit_code}"
+        rt.block_after_exit = (
+            f"post_init hook '{hook.name}' failed ({why}); fix it and use 'Run hook now', or re-initialise"
+        )
+        if rt.child is not None:
+            rt.child.terminate()
+
+    @staticmethod
+    def _mark_post_init_ok(project):
+        now = timezone.now()
+        project.post_init_ok_at = now
+        SyncProject.objects.filter(pk=project.pk).update(post_init_ok_at=now)
+
+    @staticmethod
+    def _project_db_version(project):
+        """The lowest db_version across the project's connections, or None."""
+        versions = [v for v in SyncStatus.objects.filter(project=project).values_list("db_version", flat=True) if v is not None]
+        return min(versions) if versions else None
+
+    def _run_requested_hooks(self, project, rt):
+        """'Run hook now' requests from the UI: sync_run rows with status requested."""
+        for run in hooks.pending_requests(project):
+            kind = (run.summary or {}).get("hook_kind", "")
+            hook = getattr(project, f"{kind}_hook", None) if kind in ("post_init", "pre_remove", "post_pull") else None
+            if hook is None:
+                run.finished_at = timezone.now()
+                run.ok = False
+                run.summary = {**(run.summary or {}), "status": "done", "stderr": f"no {kind} hook is configured"}
+                run.save()
+                continue
+            db_version = self._project_db_version(project)
+            prev = rt.last_post_pull_version if kind == "post_pull" else None
+            _, result = hooks.run_hook(
+                project, hook, kind, db_version=db_version, prev_db_version=prev,
+                requested_by=(run.summary or {}).get("requested_by"), run=run,
+            )
+            if kind == "post_init" and result.ok and project.post_init_ok_at is None:
+                self._mark_post_init_ok(project)
+                # A blocked project starts on the next tick; nothing else to do.
+
+    # --- step 6: post_pull hook (§6, §8) --------------------------------------
+
+    def _maybe_post_pull(self, project, rt):
+        hook = project.post_pull_hook
+        if hook is None:
+            return
+        db_version = self._project_db_version(project)
+        if db_version is None:
+            return
+        if rt.last_post_pull_version is None:
+            last = (
+                SyncRun.objects.filter(project=project, kind=SyncRun.Kind.HOOK, ok=True,
+                                       summary__hook_kind="post_pull")
+                .order_by("-started_at").values_list("summary__db_version", flat=True).first()
+            )
+            rt.last_post_pull_version = last if last is not None else db_version
+            return
+        if db_version > rt.last_post_pull_version:
+            prev = rt.last_post_pull_version
+            rt.last_post_pull_version = db_version
+            hooks.run_hook(project, hook, "post_pull", db_version=db_version, prev_db_version=prev)
 
     # --- step 2: stop --------------------------------------------------------
 
@@ -332,6 +422,12 @@ class Supervisor:
             rt.restarting = False
             self._set_state(project, PS.STOPPED, "restarting")
             events.info(project, f"db-sync stopped for restart (pid {child.pid})")
+            return
+
+        if rt.block_after_exit:
+            reason, rt.block_after_exit = rt.block_after_exit, ""
+            self._set_state(project, PS.BLOCKED, reason)
+            events.error(project, f"db-sync stopped: {reason}")
             return
 
         if now - rt.last_start_at >= STABLE_UPTIME:
@@ -391,6 +487,7 @@ class Supervisor:
         if process_running and now - rt.last_start_at >= settings.DBSYNC_CHECK_INTERVAL:
             conditions.resolve(project, "process_crashed", "resolved: db-sync has stayed up")
 
+        self._maybe_post_pull(project, rt)
         log.info("check: %s health=%s conditions=%s", project, health, sorted(wanted) or "-")
 
     # --- helpers -------------------------------------------------------------

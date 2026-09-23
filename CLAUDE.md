@@ -49,6 +49,9 @@ Invariants learned the hard way:
   after that; POC leftovers are cleaned last. Before any cleanup of a
   hand-run sync: `pg_dump -n '<prefix>*'`, tables may hold hand-made
   corrections.
+- "Run hook now" is a sync_run row (kind hook, summary.status requested)
+  that the supervisor executes on its next tick; the web process never runs
+  a hook itself. Hook output stored in the registry is masked and capped.
 - db-sync's own init adopts existing schemas whose base comment names the
   project (downloads `db_version`, compares base with the GeoPackage). The
   manager's `add` relies on that; it never re-implements init.

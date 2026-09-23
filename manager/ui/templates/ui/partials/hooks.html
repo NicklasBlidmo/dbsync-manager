@@ -1,0 +1,31 @@
+{% load ui_extras %}
+{% if hooks %}
+<p>
+  {% for kind, hook in hooks %}
+    <span class="badge muted">{{ kind }}: {{ hook.name }}</span>
+    {% if can_operate %}
+    <form class="inline" method="post" action="{% url 'project_run_hook' project.pk %}">{% csrf_token %}
+      <input type="hidden" name="kind" value="{{ kind }}"><button type="submit">Run {{ kind }} now</button></form>
+    {% endif %}
+  {% endfor %}
+</p>
+{% else %}
+<p class="muted">No hooks configured for this project (set them in the admin or when adding the sync).</p>
+{% endif %}
+{% if hook_runs %}
+<table>
+  <thead><tr><th>Started</th><th>Hook</th><th>Result</th><th class="num">Seconds</th><th>By</th></tr></thead>
+  <tbody>
+  {% for run in hook_runs %}
+    <tr>
+      <td class="muted" style="white-space:nowrap">{{ run.started_at|date:"Y-m-d H:i:s" }}</td>
+      <td>{{ run.label }}</td>
+      <td><span class="badge {% if run.state == 'ok' %}ok{% elif run.state == 'requested' or run.state == 'running' %}info{% else %}bad{% endif %}">{{ run.state }}</span>
+        {% if run.output %}<details><summary class="muted">output</summary><pre style="max-height:16rem">{{ run.output }}</pre></details>{% endif %}</td>
+      <td class="num">{{ run.duration|default_if_none:"" }}</td>
+      <td class="muted">{{ run.requested_by|default:"supervisor" }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
