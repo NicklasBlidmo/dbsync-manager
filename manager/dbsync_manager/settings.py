@@ -180,6 +180,9 @@ EMAIL_PORT = env_int("SMTP_PORT", 587)
 EMAIL_HOST_USER = env("SMTP_USER", "")
 EMAIL_HOST_PASSWORD = env("SMTP_PASSWORD", "")
 EMAIL_USE_TLS = env_bool("SMTP_TLS", True)
+# The supervisor sends alert mail inside its tick; without a timeout an
+# unreachable SMTP host would stall the loop (docs/m365-direct-send.md).
+EMAIL_TIMEOUT = env_int("SMTP_TIMEOUT", 30)
 DEFAULT_FROM_EMAIL = env("SMTP_FROM", "dbsync-manager@localhost")
 EMAIL_BACKEND = (
     "django.core.mail.backends.smtp.EmailBackend"

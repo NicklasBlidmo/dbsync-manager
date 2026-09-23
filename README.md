@@ -95,6 +95,15 @@ CREATE SCHEMA dbsync_manager AUTHORIZATION dbsync_manager;
 All manager tables, Django's own included, live in that schema. Nothing is
 created in `public` or in synced schemas.
 
+### E-mail
+
+Alerts go out through whatever `SMTP_*` in `.env` points at. With
+`SMTP_USER` and `SMTP_PASSWORD` empty the manager sends without
+authentication, which is how Microsoft 365 direct send works; see
+[docs/m365-direct-send.md](docs/m365-direct-send.md) for the tenant-side
+setup and the checks to run when mail stops. `manage.py sendtestemail`
+sends a test message with the configured settings.
+
 ## Layout
 
 ```
