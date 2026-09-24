@@ -71,7 +71,11 @@ class Database(OwnedModel):
     """
 
     name = models.CharField(max_length=100, unique=True)
-    host = models.CharField(max_length=255)
+    host = models.CharField(
+        max_length=255,
+        help_text="As seen from the manager's container: the server's LAN address or a Docker service name. "
+                  "'localhost' is the container itself.",
+    )
     port = models.PositiveIntegerField(default=5432)
     dbname = models.CharField(max_length=100)
     user = models.CharField(max_length=100)
@@ -143,6 +147,16 @@ class Hook(OwnedModel):
 
     def __str__(self):
         return f"{self.name} [{self.kind}]"
+
+    def is_referenced(self) -> bool:
+        """True when any project uses this hook; its kind is then locked in the admin."""
+        if self.pk is None:
+            return False
+        from django.db.models import Q
+
+        return SyncProject.objects.filter(
+            Q(post_init_hook=self) | Q(pre_remove_hook=self) | Q(post_pull_hook=self)
+        ).exists()
 
 
 # --- projects (§5, §6) --------------------------------------------------------

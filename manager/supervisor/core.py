@@ -97,6 +97,9 @@ class Supervisor:
     def _on_signal(self, signum, frame):
         log.info("received signal %s, stopping after the current tick", signum)
         self._stop_requested.set()
+        # A hook may be running inside this tick (a long pg_dump); without
+        # this the container's grace period expires and Docker kills us.
+        hooks.interrupt_running()
 
     def ensure_lock(self):
         """Hold a session-level advisory lock for the life of this process.
@@ -385,6 +388,11 @@ class Supervisor:
             self._mark_post_init_ok(project)
             self._set_state(project, PS.RUNNING, "")
             return
+        if result.interrupted:
+            # Shutdown, not a hook failure: stay initializing; the next
+            # supervisor runs the hook again through _observe.
+            self._set_state(project, PS.INITIALIZING, "post_init hook interrupted by supervisor shutdown; re-run on restart")
+            return
         # A sync without its grants, views and validation is worse than one
         # that waits (§8): stop the child; _handle_exit records blocked.
         why = "timed out" if result.timed_out else f"exit code {result.exit_code}"
@@ -519,6 +527,10 @@ class Supervisor:
     def _maybe_check(self, project, rt, now):
         if now - rt.last_check_at < settings.DBSYNC_CHECK_INTERVAL:
             return
+        if project.process_state == PS.INITIALIZING:
+            # Checkouts and schemas are being created; a check now only
+            # reports missing files. Retried every tick until initialised.
+            return
         rt.last_check_at = now
         if not project.connections.all():
             return
@@ -589,10 +601,12 @@ class SupervisorIO:
             child.terminate()
             rt.stopping_since = now
             log.info("operation %s: SIGTERM to db-sync pid %s", operation.pk, child.pid)
-        elif now - rt.stopping_since > STOP_GRACE:
+            return operations.Wait(f"SIGTERM sent to db-sync pid {child.pid}")
+        if now - rt.stopping_since > STOP_GRACE:
             child.kill()
             log.warning("operation %s: db-sync pid %s ignored SIGTERM; SIGKILL", operation.pk, child.pid)
-        return operations.WAIT
+            return operations.Wait(f"SIGKILL sent to pid {child.pid} after {STOP_GRACE}s")
+        return operations.Wait(f"waiting for pid {child.pid} to exit")
 
     def pre_remove_hook(self, operation):
         project = operation.project
@@ -601,6 +615,8 @@ class SupervisorIO:
             return "no pre_remove hook configured"
         run, result = hooks.run_hook(project, hook, "pre_remove", db_version=self.sup._project_db_version(project),
                                      trigger="auto")
+        if result.interrupted:
+            raise operations.Interrupted(f"pre_remove hook '{hook.name}' was stopped by supervisor shutdown (run {run.pk})")
         if not result.ok:
             why = "timed out" if result.timed_out else f"exit code {result.exit_code}"
             raise operations.StepFailed(

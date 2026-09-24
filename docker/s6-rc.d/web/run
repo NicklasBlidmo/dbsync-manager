@@ -3,6 +3,12 @@ cd /app
 # s6-setuidgid changes the user but not the environment; with HOME=/root
 # gunicorn cannot create its control socket directory.
 export HOME=/home/manager
+# HTMX polling makes the access log one line per panel every few seconds
+# per open page; off unless WEB_ACCESS_LOG=1 in .env.
+access=""
+if [ "${WEB_ACCESS_LOG:-0}" = "1" ]; then
+    access="--access-logfile -"
+fi
 exec s6-setuidgid manager gunicorn dbsync_manager.wsgi:application \
     --bind 0.0.0.0:8080 --workers 2 --threads 4 --timeout 60 \
-    --access-logfile - --error-logfile -
+    $access --error-logfile -

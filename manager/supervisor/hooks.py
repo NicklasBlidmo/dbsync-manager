@@ -47,6 +47,24 @@ class HookResult:
     stdout: str
     stderr: str
     duration_s: float
+    interrupted: bool = False   # killed because the supervisor is shutting down
+
+
+# Process groups of hooks running right now, so a SIGTERM to the
+# supervisor can end them instead of waiting for Docker's SIGKILL.
+_running: set = set()
+
+
+def interrupt_running():
+    for pid in list(_running):
+        try:
+            os.killpg(pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            pass
+    _interrupted.update(_running)
+
+
+_interrupted: set = set()
 
 
 # --- pure helpers ----------------------------------------------------------------
@@ -130,24 +148,34 @@ def execute(command: str, *, cwd, env, timeout_s: int) -> HookResult:
         start_new_session=True,
     )
     timed_out = False
+    _running.add(proc.pid)
     try:
-        out, err = proc.communicate(timeout=timeout_s)
-    except subprocess.TimeoutExpired:
-        timed_out = True
         try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            proc.kill()
-        out, err = proc.communicate()
+            out, err = proc.communicate(timeout=timeout_s)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                proc.kill()
+            out, err = proc.communicate()
+    finally:
+        _running.discard(proc.pid)
+        interrupted = proc.pid in _interrupted
+        _interrupted.discard(proc.pid)
     duration = time.monotonic() - started
     code = None if timed_out else proc.returncode
+    stderr = err.decode("utf-8", errors="replace")
+    if interrupted:
+        stderr += "\n[interrupted: supervisor shutting down]"
     return HookResult(
-        ok=(not timed_out and code == 0),
+        ok=(not timed_out and not interrupted and code == 0),
         exit_code=code,
         timed_out=timed_out,
         stdout=out.decode("utf-8", errors="replace"),
-        stderr=err.decode("utf-8", errors="replace"),
+        stderr=stderr,
         duration_s=round(duration, 1),
+        interrupted=interrupted,
     )
 
 
@@ -220,6 +248,7 @@ def run_hook(project, hook, event_kind, *, connections=None, db_version=None, pr
         "status": "done",
         "exit_code": result.exit_code,
         "timed_out": result.timed_out,
+        "interrupted": result.interrupted,
         "duration_s": result.duration_s,
         "stdout": result.stdout,
         "stderr": result.stderr,
@@ -231,7 +260,8 @@ def run_hook(project, hook, event_kind, *, connections=None, db_version=None, pr
         events.info(project, f"{label} finished ok in {result.duration_s}s", source="hook")
         log.info("%s for %s ok (%.1fs)", label, project, result.duration_s)
     else:
-        why = "timed out" if result.timed_out else f"exit code {result.exit_code}"
+        why = "interrupted by supervisor shutdown" if result.interrupted else (
+            "timed out" if result.timed_out else f"exit code {result.exit_code}")
         tail_lines = "\n".join(result.stderr.strip().splitlines()[-10:])
         message = f"{label} failed ({why}) after {result.duration_s}s"
         if tail_lines:

@@ -30,11 +30,22 @@ REMOVE_STEPS = ["block", "stop_child", "pre_remove_hook", "drop_schemas", "delet
 REINIT_STEPS = ["block", "stop_child", "snapshot_pending", "pre_remove_hook", "drop_schemas", "delete_workdir", "reset"]
 FIRST_DESTRUCTIVE_STEP = "drop_schemas"
 
-WAIT = object()
+class Wait:
+    """The step needs another tick; `detail` says what it did this time."""
+
+    def __init__(self, detail: str = "waiting"):
+        self.detail = detail
+
+
+WAIT = Wait()
 
 
 class StepFailed(Exception):
     """The step cannot complete; the message says what the operator must do."""
+
+
+class Interrupted(Exception):
+    """The supervisor is shutting down mid-step; the step is re-run by the next supervisor."""
 
 
 def steps_for(operation) -> list:
@@ -55,7 +66,7 @@ def _now_iso():
 
 
 def advance(operation, io, *, save=None) -> str:
-    """Run the operation as far as it goes this tick. Returns done | wait | failed."""
+    """Run the operation as far as it goes this tick. Returns done | wait | failed | interrupted."""
     save = save or operation.save
     steps = steps_for(operation)
     start = steps.index(operation.step) if operation.step in steps else 0
@@ -65,18 +76,22 @@ def advance(operation, io, *, save=None) -> str:
 
     for name in steps[start:]:
         operation.step = name
-        # Re-use the open entry of a step that returned WAIT last tick.
-        if log and log[-1].get("name") == name and log[-1].get("finished_at") is None:
-            entry = log[-1]
-        else:
-            attempts = sum(1 for e in log if e.get("name") == name)
-            entry = {"name": name, "started_at": _now_iso(), "finished_at": None, "ok": None, "detail": "", "attempt": attempts + 1}
-            log.append(entry)
+        # One entry per attempt, so a wait or an interruption keeps its own
+        # detail instead of being overwritten by the next tick (field
+        # finding 2026-09-24: "no daemon running" hid "SIGTERM sent").
+        attempts = sum(1 for e in log if e.get("name") == name)
+        entry = {"name": name, "started_at": _now_iso(), "finished_at": None, "ok": None, "detail": "", "attempt": attempts + 1}
+        log.append(entry)
         operation.steps = log
         save()
 
         try:
             result = getattr(io, name)(operation)
+        except Interrupted as exc:
+            entry.update(finished_at=_now_iso(), ok=None, detail=f"interrupted: {exc}; the next supervisor re-runs this step")
+            operation.steps = log
+            save()
+            return "interrupted"
         except StepFailed as exc:
             entry.update(finished_at=_now_iso(), ok=False, detail=str(exc))
             operation.status = Operation.Status.FAILED
@@ -92,8 +107,8 @@ def advance(operation, io, *, save=None) -> str:
             save()
             return "failed"
 
-        if result is WAIT:
-            entry["detail"] = "waiting"
+        if isinstance(result, Wait):
+            entry.update(finished_at=_now_iso(), ok=None, detail=f"waiting: {result.detail}")
             operation.steps = log
             save()
             return "wait"

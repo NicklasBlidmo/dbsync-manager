@@ -289,14 +289,18 @@ def project_operation(request, pk, kind):
     if open_op is not None:
         return _conflict(project, open_op)
     pending, checked_at, check_failed = _pending_changes(project)
+    # The name is required whenever data can be lost: always for re-init,
+    # and for remove when the schemas are dropped or the last check saw
+    # pending changes or failed (field finding 2026-09-24, item 2).
     needs_name = bool(pending) or check_failed or kind == "reinit"
     errors = []
     if request.method == "POST":
-        if needs_name and request.POST.get("confirm_name", "").strip() != project.mergin_project:
+        drop = request.POST.get("drop_schemas") == "1"
+        if (needs_name or drop) and request.POST.get("confirm_name", "").strip() != project.mergin_project:
             errors.append("type the project name exactly to confirm")
         params = {}
         if kind == "remove":
-            params["drop_schemas"] = request.POST.get("drop_schemas") == "1"
+            params["drop_schemas"] = drop
         else:
             init_from = request.POST.get("init_from", project.init_from)
             if init_from not in ("gpkg", "db"):

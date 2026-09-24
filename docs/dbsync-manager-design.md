@@ -578,7 +578,19 @@ active conditions, since they described schemas that no longer exist.
 
 Implementation notes (2026-09-24): operations run at the start of every
 tick, before the projects are reconciled, so a `stop_child` SIGTERM is
-seen as a stop and not a crash. While an operation is open the project is
+seen as a stop and not a crash. Every attempt of a step gets its own log
+entry, so a wait ("SIGTERM sent") is not overwritten by the next tick's
+"no daemon running". A SIGTERM to the supervisor while a hook runs
+terminates the hook's process group; the step is logged as interrupted
+and the operation stays `running` at that step, so the next supervisor
+re-runs it (hooks are idempotent, §8).
+
+**Known limitation.** Hooks and operation steps run inside the tick,
+synchronously. While a ten-minute `pre_remove` dumps one project, no
+other project is reconciled or checked. Acceptable with a handful of
+projects; the fix is a worker that the tick polls, listed under v1.1
+(§14). Until then, long hooks are a reason to keep `DBSYNC_TICK` in mind
+when reading timestamps. While an operation is open the project is
 reconciled only for the child's exit: no start, no hook requests, no
 consistency check. The web layer answers 409 to pause, resume, "run hook
 now" and a second operation; the project page shows the step log and
@@ -1053,6 +1065,8 @@ middle); (7) log history. Then the Bönsta takeover (§15 order, step 3)
 with the ak-db hooks bind-mounted. The JSON API is added when `akdb
 project close` needs it.
 v1.1: OIDC login; per-project notification channels beyond e-mail (webhook);
+hooks and operation steps in a worker so a long hook does not stall the
+supervisor's tick (§6 known limitation);
 **content-level consistency check** as a spike: a normalised per-row hash
 per table computed in both SQLite and PostgreSQL (geometry as WKB, floats
 with fixed precision, datetimes as ISO 8601 UTC) and compared between the

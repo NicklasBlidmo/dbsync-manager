@@ -60,7 +60,7 @@ class AdvanceTests(SimpleTestCase):
         self.assertTrue(all(e["ok"] for e in op.steps))
         self.assertGreater(self.saves, len(operations.REMOVE_STEPS))   # written before and after each step
 
-    def test_stop_child_waits_across_ticks_without_duplicate_entries(self):
+    def test_stop_child_waits_across_ticks_with_one_entry_per_attempt(self):
         io = FakeIO(wait_stop=2)
         op = make_op()
         self.assertEqual(advance(op, io, save=self.save), "wait")
@@ -70,7 +70,27 @@ class AdvanceTests(SimpleTestCase):
         self.assertEqual(advance(op, io, save=self.save), "done")
         self.assertEqual(io.calls.count("block"), 1)            # not re-run after the wait
         self.assertEqual(io.calls.count("stop_child"), 3)
-        self.assertEqual([e["name"] for e in op.steps], operations.REMOVE_STEPS)  # one entry per step
+        stop_entries = [e for e in op.steps if e["name"] == "stop_child"]
+        self.assertEqual([e["attempt"] for e in stop_entries], [1, 2, 3])
+        self.assertEqual([e["ok"] for e in stop_entries], [None, None, True])
+        self.assertTrue(stop_entries[0]["detail"].startswith("waiting: "))   # each attempt keeps its detail
+
+    def test_interrupted_step_keeps_the_operation_running_for_the_next_supervisor(self):
+        class InterruptingIO(FakeIO):
+            def pre_remove_hook(self, operation):
+                self.calls.append("pre_remove_hook")
+                raise operations.Interrupted("supervisor shutting down")
+
+        op = make_op(drop_schemas=True)
+        self.assertEqual(advance(op, InterruptingIO(), save=self.save), "interrupted")
+        self.assertEqual(op.status, "running")
+        self.assertEqual(op.step, "pre_remove_hook")
+        self.assertIn("interrupted", op.steps[-1]["detail"])
+        self.assertIsNone(op.steps[-1]["ok"])
+        # A fresh supervisor resumes at the same step.
+        io = FakeIO()
+        self.assertEqual(advance(op, io, save=self.save), "done")
+        self.assertEqual(io.calls[0], "pre_remove_hook")
 
     def test_failed_archive_stops_before_anything_destructive(self):
         io = FakeIO(fail={"pre_remove_hook": "hook 'archive' failed (exit code 1)"})

@@ -1,3 +1,4 @@
+{% load ui_extras %}
 {% if operation %}
 <div class="panel">
   <p>
@@ -23,9 +24,9 @@
       <tr>
         <td class="muted">{{ forloop.counter }}</td>
         <td>{{ entry.name }}{% if entry.attempt > 1 %} <span class="muted">(attempt {{ entry.attempt }})</span>{% endif %}</td>
-        <td class="muted">{{ entry.started_at|slice:"11:19" }}</td>
-        <td>{% if entry.ok %}<span class="badge ok">ok</span>{% elif entry.ok is False %}<span class="badge bad">failed</span>{% else %}<span class="badge info">{{ entry.detail|default:"running" }}</span>{% endif %}</td>
-        <td class="muted">{% if entry.ok is not None %}{{ entry.detail }}{% endif %}</td>
+        <td class="muted">{{ entry.started_at|isotime }}</td>
+        <td>{% if entry.ok %}<span class="badge ok">ok</span>{% elif entry.ok is False %}<span class="badge bad">failed</span>{% elif entry.finished_at %}<span class="badge info">waiting</span>{% else %}<span class="badge info">running</span>{% endif %}</td>
+        <td class="muted">{{ entry.detail }}</td>
       </tr>
     {% empty %}
       <tr><td colspan="5" class="muted">Waiting for the supervisor's next tick.</td></tr>

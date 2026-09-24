@@ -5,6 +5,8 @@ capping, and the process itself (POSIX only). No registry database.
 
 import os
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -96,6 +98,25 @@ class ExecuteTests(SimpleTestCase):
         self.assertEqual(result.stdout.strip(), "event=post_init")
         self.assertEqual(result.stderr.strip(), "oops")
         self.assertFalse(result.timed_out)
+
+    def test_shutdown_interrupts_a_running_hook(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            results = []
+            worker = threading.Thread(
+                target=lambda: results.append(hooks.execute("sleep 30", cwd=tmp, env=dict(os.environ), timeout_s=60)))
+            worker.start()
+            deadline = time.monotonic() + 5
+            while not hooks._running and time.monotonic() < deadline:
+                time.sleep(0.05)
+            hooks.interrupt_running()
+            worker.join(timeout=10)
+        self.assertEqual(len(results), 1)
+        result = results[0]
+        self.assertTrue(result.interrupted)
+        self.assertFalse(result.ok)
+        self.assertFalse(result.timed_out)
+        self.assertIn("interrupted", result.stderr)
+        self.assertLess(result.duration_s, 10)
 
     def test_timeout_kills_the_process_group(self):
         with tempfile.TemporaryDirectory() as tmp:

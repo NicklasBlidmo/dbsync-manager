@@ -42,10 +42,9 @@
       <option value="db" {% if project.init_from == "db" %}selected{% endif %}>Database (GeoPackage in Mergin recreated from it; needs the modified schema kept)</option>
     </select></label></p>
   {% endif %}
-  {% if needs_name %}
-  <p><label>Type the project name <code>{{ project.mergin_project }}</code> to confirm<br>
+  <p><label>Type the project name <code>{{ project.mergin_project }}</code> to confirm
+    {% if not needs_name %}<span class="muted">(required when dropping the schemas)</span>{% endif %}<br>
     <input name="confirm_name" autocomplete="off" style="width:100%"></label></p>
-  {% endif %}
   <p>
     <button type="submit">{% if kind == "remove" %}Remove{% else %}Re-initialise{% endif %}</button>
     <a class="button" href="{% url 'project' project.pk %}">Back</a>

@@ -102,6 +102,13 @@ class HookAdmin(OwnedAdmin):
     readonly_fields = ["created_by", "created_at"]
     fields = ["name", "kind", "command", "timeout_s", "database", "created_by", "created_at"]
 
+    def get_readonly_fields(self, request, obj=None):
+        fields = list(super().get_readonly_fields(request, obj))
+        if obj is not None and obj.is_referenced():
+            # A project pointing at a hook of the wrong kind would fail silently.
+            fields.append("kind")
+        return fields
+
 
 class SyncConnectionInline(admin.TabularInline):
     model = SyncConnection

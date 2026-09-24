@@ -29,6 +29,24 @@ def version(value):
 
 
 @register.filter
+def isotime(value, fmt="H:i:s"):
+    """An ISO timestamp string (as stored in JSON logs) in the page's time zone."""
+    from datetime import datetime
+
+    from django.utils import dateformat, timezone
+
+    if not value:
+        return ""
+    try:
+        parsed = datetime.fromisoformat(str(value))
+    except ValueError:
+        return str(value)
+    if timezone.is_naive(parsed):
+        parsed = timezone.make_aware(parsed, timezone.utc)
+    return dateformat.format(timezone.localtime(parsed), fmt)
+
+
+@register.filter
 def condition_label(key):
     """'db_behind:1-punkter.gpkg' -> 'db_behind (1-punkter.gpkg)'."""
     name, _, rest = str(key).partition(":")
