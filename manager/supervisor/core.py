@@ -202,10 +202,12 @@ class Supervisor:
         # Step 0: operations (§6). Executed before reconcile so that a
         # stop_child step's SIGTERM is seen as a stop, not a crash.
         self.open_operations = {}
+        touched = set()   # projects whose registry rows an operation changed this tick
         for operation in Operation.objects.filter(status__in=Operation.OPEN_STATUSES).select_related("project"):
             self.open_operations[operation.project_id] = operation
             if operation.status == Operation.Status.FAILED:
                 continue
+            touched.add(operation.project_id)
             try:
                 outcome = operations.advance(operation, self.io)
             except DatabaseError:
@@ -221,6 +223,13 @@ class Supervisor:
                                                 f"step '{operation.step}': {operation.error}")
 
         for project in projects:
+            if project.pk in touched:
+                # The object (and its prefetched connections) was loaded before
+                # the operation ran and is stale: after mark_removed it still
+                # says desired running with connections, and reconciling it
+                # would start a daemon that re-creates the schemas just
+                # dropped (field finding 2026-09-24). Next tick re-reads.
+                continue
             try:
                 self._reconcile(project)
             except DatabaseError:
@@ -274,7 +283,21 @@ class Supervisor:
 
     # --- step 1: start -------------------------------------------------------
 
+    @staticmethod
+    def _still_wanted(project) -> bool:
+        """Re-read the registry right before a start: the in-memory project
+        may be stale (an operation in this tick, an edit in the admin)."""
+        fresh = SyncProject.objects.filter(pk=project.pk).values("desired_state", "removed_at").first()
+        if fresh is None or fresh["removed_at"] is not None:
+            log.warning("not starting %s: removed from the registry", project)
+            return False
+        if fresh["desired_state"] != SyncProject.DesiredState.RUNNING:
+            return False
+        return True
+
     def _start(self, project, rt, now):
+        if not self._still_wanted(project):
+            return
         paths = self._paths(project.pk)
         try:
             text = render_config(

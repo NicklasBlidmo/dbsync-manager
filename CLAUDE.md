@@ -42,6 +42,11 @@ Invariants learned the hard way:
   The config renderer refuses such secrets; do not "fix" that by quoting.
 - db-sync 2.3.0 logs in with username and password only; API token accounts
   render as `blocked` with the reason, not as a crash loop.
+- Everything the supervisor loads at the top of a tick is a snapshot. A
+  step that changes a project's registry row (mark_removed, reset) ends
+  that project's participation in the current tick, and _start re-reads
+  desired_state and removed_at right before spawning. A remove once
+  re-created the schemas it had just dropped because of this (2026-09-24).
 - The first production target already runs a live, hand-configured db-sync
   against the same database. Two daemons must never sync the same schemas.
   Order decided 2026-09-22 (design §15): the Bönsta clone `p3922_test` is the

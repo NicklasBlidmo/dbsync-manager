@@ -148,6 +148,9 @@ class PostInitFlowTests(SimpleTestCase):
             patcher = mock.patch.object(Supervisor, target)
             setattr(self, target, patcher.start())
             self.addCleanup(patcher.stop)
+        wanted = mock.patch.object(Supervisor, "_still_wanted", return_value=True)
+        wanted.start()
+        self.addCleanup(wanted.stop)
         for target in ("supervisor.core.events", "supervisor.core.hooks.pending_requests"):
             patcher = mock.patch(target)
             self.addCleanup(patcher.stop)
