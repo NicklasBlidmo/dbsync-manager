@@ -5,7 +5,7 @@ The operation steps against the real test database (design §13). Tagged
 
 from django.conf import settings
 from django.db import connection
-from django.test import TestCase, tag
+from django.test import TransactionTestCase, tag
 from django.utils import timezone
 
 from registry.models import Database, MerginAccount, Operation, SyncConnection, SyncProject, SyncStatus
@@ -15,7 +15,15 @@ from .operations import StepFailed
 
 
 @tag("db")
-class SupervisorIOTests(TestCase):
+class SupervisorIOTests(TransactionTestCase):
+    """TransactionTestCase, not TestCase: drop_schemas works on its own
+    connection, which cannot see schemas created inside an uncommitted test
+    transaction (the first server run of this test failed exactly so)."""
+
+    def tearDown(self):
+        with connection.cursor() as cursor:
+            cursor.execute("DROP SCHEMA IF EXISTS io_s_a CASCADE; DROP SCHEMA IF EXISTS io_b_a CASCADE")
+
     def setUp(self):
         cfg = settings.DATABASES["default"]
         self.database = Database(name="test-db", host=cfg["HOST"], port=int(cfg["PORT"] or 5432),
@@ -33,6 +41,7 @@ class SupervisorIOTests(TestCase):
 
     def test_drop_schemas_is_idempotent_and_reports(self):
         self.cursor.execute("CREATE SCHEMA io_s_a; CREATE TABLE io_s_a.t (id int); CREATE SCHEMA io_b_a")
+        connection.commit()   # autocommit is off inside tests; the step uses its own connection
         op = Operation(project=self.project, kind="remove", params={"drop_schemas": True})
         self.assertEqual(self.sup.io.drop_schemas(op), "dropped io_b_a, io_s_a")
         self.cursor.execute("SELECT count(*) FROM pg_namespace WHERE nspname IN ('io_s_a', 'io_b_a')")
