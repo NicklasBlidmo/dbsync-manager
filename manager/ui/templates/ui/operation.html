@@ -1,0 +1,54 @@
+{% extends "ui/base.html" %}
+{% block title %}{{ kind }} {{ project.mergin_project }} · dbsync-manager{% endblock %}
+{% block content %}
+<h1>{% if kind == "remove" %}Remove sync{% else %}Re-initialise sync{% endif %} <span class="muted">{{ project.mergin_project }}</span></h1>
+
+{% for error in errors %}<div class="notice bad">{{ error }}</div>{% endfor %}
+
+<div class="panel">
+  {% if kind == "remove" %}
+  <p>The daemon is stopped, the <code>pre_remove</code> hook runs{% if not project.pre_remove_hook %} (none configured){% endif %},
+     and the project is marked removed. Its events stay for the audit trail.</p>
+  {% else %}
+  <p>The daemon is stopped, the <code>pre_remove</code> hook runs{% if not project.pre_remove_hook %} (none configured){% endif %},
+     <strong>every synced schema is dropped and recreated</strong>, and the sync initialises again
+     from scratch. The <code>post_init</code> hook runs afterwards as for a new project.</p>
+  {% endif %}
+
+  <h2>What would be dropped</h2>
+  <ul>
+  {% for conn in connections %}<li>{{ conn.sync_file }}: <code>{{ conn.base_schema }}</code>, <code>{{ conn.modified_schema }}</code></li>{% endfor %}
+  </ul>
+
+  {% if pending %}
+  <div class="notice bad"><strong>Pending database changes that are not in Mergin would be lost:</strong>
+    {% for key, diff in pending.items %}{{ key }} ({{ diff }} rows){% if not forloop.last %}, {% endif %}{% endfor %}.
+    From the last check at {{ checked_at|date:"Y-m-d H:i" }}.</div>
+  {% elif check_failed %}
+  <div class="notice">The last consistency check failed, so pending database changes cannot be ruled out.</div>
+  {% else %}
+  <p class="muted">No pending database changes at the last check{% if checked_at %} ({{ checked_at|date:"Y-m-d H:i" }}){% endif %}.</p>
+  {% endif %}
+</div>
+
+<form method="post" class="panel">
+  {% csrf_token %}
+  {% if kind == "remove" %}
+  <p><label><input type="checkbox" name="drop_schemas" value="1"> Also drop the schemas listed above (otherwise they are left in the database)</label></p>
+  {% else %}
+  <p><label>Initialise from
+    <select name="init_from">
+      <option value="gpkg" {% if project.init_from == "gpkg" %}selected{% endif %}>GeoPackage in Mergin (database recreated from it)</option>
+      <option value="db" {% if project.init_from == "db" %}selected{% endif %}>Database (GeoPackage in Mergin recreated from it; needs the modified schema kept)</option>
+    </select></label></p>
+  {% endif %}
+  {% if needs_name %}
+  <p><label>Type the project name <code>{{ project.mergin_project }}</code> to confirm<br>
+    <input name="confirm_name" autocomplete="off" style="width:100%"></label></p>
+  {% endif %}
+  <p>
+    <button type="submit">{% if kind == "remove" %}Remove{% else %}Re-initialise{% endif %}</button>
+    <a class="button" href="{% url 'project' project.pk %}">Back</a>
+  </p>
+</form>
+{% endblock %}

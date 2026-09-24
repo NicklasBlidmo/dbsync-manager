@@ -24,11 +24,14 @@ from django.conf import settings
 from django.db import DatabaseError, connection
 from django.utils import timezone
 
+import json
+import shutil
+
 from registry import events
 from registry.crypto import SecretError
-from registry.models import Event, SyncProject, SyncRun, SyncStatus
+from registry.models import Event, Operation, SyncConnection, SyncProject, SyncRun, SyncStatus
 
-from . import check, conditions, dbinspect, hooks, processes
+from . import check, conditions, dbinspect, hooks, operations, processes
 from .config_render import ConfigRenderError, render_config, write_config
 from .logs import rotate_if_needed, tail
 
@@ -82,6 +85,8 @@ class Supervisor:
         self._stop_requested = threading.Event()
         self._lock_held = False
         self.runtimes: dict[int, Runtime] = {}
+        self.open_operations: dict[int, Operation] = {}
+        self.io = SupervisorIO(self)
 
     # --- lifecycle -----------------------------------------------------------
 
@@ -194,6 +199,27 @@ class Supervisor:
                     log.warning("project %s vanished from the registry; stopping its daemon", project_id)
                     rt.child.terminate()
 
+        # Step 0: operations (§6). Executed before reconcile so that a
+        # stop_child step's SIGTERM is seen as a stop, not a crash.
+        self.open_operations = {}
+        for operation in Operation.objects.filter(status__in=Operation.OPEN_STATUSES).select_related("project"):
+            self.open_operations[operation.project_id] = operation
+            if operation.status == Operation.Status.FAILED:
+                continue
+            try:
+                outcome = operations.advance(operation, self.io)
+            except DatabaseError:
+                raise
+            except Exception:  # noqa: BLE001
+                log.exception("operation %s failed unexpectedly", operation.pk)
+                continue
+            if outcome == "done":
+                self.open_operations.pop(operation.project_id, None)
+                events.info(operation.project, f"{operation.kind} operation {operation.pk} completed")
+            elif outcome == "failed":
+                events.error(operation.project, f"{operation.kind} operation {operation.pk} failed at "
+                                                f"step '{operation.step}': {operation.error}")
+
         for project in projects:
             try:
                 self._reconcile(project)
@@ -211,6 +237,15 @@ class Supervisor:
 
         if rt.child is not None and not rt.child.alive:
             self._handle_exit(project, rt, now)
+
+        operation = self.open_operations.get(project.pk)
+        if operation is not None:
+            # The operation owns the project: no start, no hooks, no check.
+            # Its stop_child step signals the daemon; the exit above records it.
+            if rt.child is None:
+                reason = f"operation {operation.pk} ({operation.kind}) {operation.status} at step '{operation.step}'"
+                self._set_state(project, PS.BLOCKED, reason)
+            return
 
         self._run_requested_hooks(project, rt)
 
@@ -413,7 +448,11 @@ class Supervisor:
 
         if rt.stopping_since is not None:
             rt.stopping_since = None
-            self._set_state(project, PS.STOPPED, "")
+            operation = self.open_operations.get(project.pk)
+            if operation is not None:
+                self._set_state(project, PS.BLOCKED, f"operation {operation.pk} ({operation.kind}) running")
+            else:
+                self._set_state(project, PS.STOPPED, "")
             events.info(project, f"db-sync stopped (pid {child.pid})")
             log.info("db-sync for %s stopped", project)
             return
@@ -499,3 +538,128 @@ class Supervisor:
         project.process_state = state
         project.process_reason = reason
         SyncProject.objects.filter(pk=project.pk).update(process_state=state, process_reason=reason)
+
+
+class SupervisorIO:
+    """The side effects of operation steps (§6 "Operations"), one method per step.
+
+    Each method is idempotent: running it twice after a crash is safe.
+    """
+
+    def __init__(self, supervisor):
+        self.sup = supervisor
+
+    # -- shared steps ------------------------------------------------------------
+
+    def block(self, operation):
+        project = operation.project
+        self.sup._set_state(project, PS.BLOCKED, f"operation {operation.pk} ({operation.kind}) running")
+        return "project blocked; the supervisor will not start its daemon"
+
+    def stop_child(self, operation):
+        rt = self.sup.runtimes.setdefault(operation.project_id, Runtime())
+        child = rt.child
+        if child is None or not child.alive:
+            return "no daemon running"
+        now = time.monotonic()
+        if rt.stopping_since is None:
+            child.terminate()
+            rt.stopping_since = now
+            log.info("operation %s: SIGTERM to db-sync pid %s", operation.pk, child.pid)
+        elif now - rt.stopping_since > STOP_GRACE:
+            child.kill()
+            log.warning("operation %s: db-sync pid %s ignored SIGTERM; SIGKILL", operation.pk, child.pid)
+        return operations.WAIT
+
+    def pre_remove_hook(self, operation):
+        project = operation.project
+        hook = project.pre_remove_hook
+        if hook is None:
+            return "no pre_remove hook configured"
+        run, result = hooks.run_hook(project, hook, "pre_remove", db_version=self.sup._project_db_version(project),
+                                     trigger="auto")
+        if not result.ok:
+            why = "timed out" if result.timed_out else f"exit code {result.exit_code}"
+            raise operations.StepFailed(
+                f"pre_remove hook '{hook.name}' failed ({why}); nothing has been dropped. "
+                f"Fix the hook and retry, or cancel (run {run.pk})"
+            )
+        return f"hook '{hook.name}' ok in {result.duration_s}s (run {run.pk})"
+
+    def drop_schemas(self, operation):
+        project = operation.project
+        if operation.kind == Operation.Kind.REMOVE and not operation.params.get("drop_schemas"):
+            return "schemas kept (drop_schemas not requested)"
+        names = []
+        for conn in project.connections.all():
+            names += [conn.base_schema, conn.modified_schema]
+        if not names:
+            return "no schemas registered"
+        dropped = []
+        with dbinspect.connect(project.database) as db, db.cursor() as cursor:
+            for name in names:
+                quoted = '"' + name.replace('"', '""') + '"'
+                try:
+                    cursor.execute(f"DROP SCHEMA IF EXISTS {quoted} CASCADE")
+                except Exception as exc:  # noqa: BLE001
+                    raise operations.StepFailed(
+                        f"DROP SCHEMA {name} failed: {exc}. Dropped so far: {', '.join(dropped) or 'none'}. "
+                        "Resolve it in PostgreSQL (dependent objects owned by another role?) and retry"
+                    ) from exc
+                dropped.append(name)
+        return "dropped " + ", ".join(dropped)
+
+    def delete_workdir(self, operation):
+        work_dir = self.sup._paths(operation.project_id)["work_dir"]
+        if not work_dir.exists():
+            return "work dir already gone"
+        shutil.rmtree(work_dir)
+        return f"removed {work_dir}"
+
+    # -- remove ---------------------------------------------------------------------
+
+    def mark_removed(self, operation):
+        project = operation.project
+        now = timezone.now()
+        SyncConnection.objects.filter(project=project).delete()
+        SyncStatus.objects.filter(project=project).delete()
+        SyncProject.objects.filter(pk=project.pk).update(
+            desired_state=SyncProject.DesiredState.REMOVED, removed_at=now,
+            process_state=PS.STOPPED, process_reason="", health=SyncProject.Health.UNKNOWN,
+            active_conditions={},
+        )
+        project.removed_at = now
+        self.sup.runtimes.pop(project.pk, None)
+        events.info(project, "sync removed" + (" and schemas dropped" if operation.params.get("drop_schemas") else ""))
+        return "project marked removed; connections and status rows deleted"
+
+    # -- reinit ---------------------------------------------------------------------
+
+    def snapshot_pending(self, operation):
+        project = operation.project
+        pending = {}
+        for status in SyncStatus.objects.filter(project=project).select_related("connection"):
+            for table, modified in (status.modified_count or {}).items():
+                base = (status.base_count or {}).get(table)
+                if base is not None and modified != base:
+                    pending[f"{status.connection.sync_file}:{table}"] = modified - base
+        detail = json.dumps(pending) if pending else "no pending database changes"
+        if pending and not operation.params.get("confirm_pending_loss"):
+            raise operations.StepFailed(
+                f"pending database changes would be lost: {detail}. Confirm the loss and retry, or cancel"
+            )
+        return detail
+
+    def reset(self, operation):
+        project = operation.project
+        SyncStatus.objects.filter(project=project).delete()
+        init_from = operation.params.get("init_from") or project.init_from
+        SyncProject.objects.filter(pk=project.pk).update(
+            post_init_ok_at=None, health=SyncProject.Health.UNKNOWN, health_since=None,
+            active_conditions={}, init_from=init_from,
+            desired_state=SyncProject.DesiredState.RUNNING, process_state=PS.STOPPED, process_reason="",
+        )
+        self.sup.runtimes[project.pk] = Runtime()
+        events.info(project, f"re-initialised: schemas dropped, will init from {init_from} on the next tick")
+        return f"registry reset; init_from={init_from}"
+

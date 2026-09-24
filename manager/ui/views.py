@@ -11,13 +11,14 @@ import logging
 
 from django.conf import settings
 from django.contrib.auth.decorators import login_required, permission_required
-from django.http import HttpResponseBadRequest
+from django.db import IntegrityError
+from django.http import HttpResponse, HttpResponseBadRequest
 from django.shortcuts import get_object_or_404, redirect, render
 from django.views.decorators.http import require_GET, require_POST
 
 from registry import events
-from registry.models import Database, Event, Hook, MerginAccount, SyncProject
-from supervisor import mergin_api
+from registry.models import Database, Event, Hook, MerginAccount, Operation, SyncProject
+from supervisor import mergin_api, operations as opsm
 from supervisor.logs import tail
 from supervisor.processes import LOG_NAME, STDERR_NAME
 
@@ -115,12 +116,16 @@ def _project_context(project):
             status.db_version is not None and status.local_version is not None
             and status.db_version < status.local_version
         )
+    operation = _open_operation(project) or project.operations.order_by("-requested_at").first()
     return {
         "project": project,
         "statuses": statuses,
         "connections": list(project.connections.all()),
         "active_conditions": sorted((project.active_conditions or {}).items()),
         "can_operate": False,
+        "operation": operation,
+        "operation_open": operation is not None and operation.is_open,
+        "cancellable": operation is not None and opsm.can_cancel(operation),
     }
 
 
@@ -209,6 +214,9 @@ def project_run_hook(request, pk):
     hook = getattr(project, f"{kind}_hook", None) if kind in HOOK_KINDS else None
     if hook is None:
         return HttpResponseBadRequest("no such hook on this project")
+    operation = _open_operation(project)
+    if operation is not None:
+        return _conflict(project, operation)
     hook_runner.request_run(project, hook, request.user)
     events.record(project, Event.Level.INFO, f"{request.user.get_username()} requested the {kind} hook '{hook.name}'",
                   source=Event.Source.USER, user=request.user)
@@ -221,6 +229,19 @@ ACTIONS = {
 }
 
 
+def _open_operation(project):
+    return project.operations.filter(status__in=Operation.OPEN_STATUSES).order_by("-requested_at").first()
+
+
+def _conflict(project, operation):
+    """HTTP 409 while an operation owns the project (§6)."""
+    return HttpResponse(
+        f"operation {operation.pk} ({operation.kind}, {operation.status}) is open on {project.mergin_project}; "
+        "wait for it, retry it or cancel it first",
+        status=409, content_type="text/plain",
+    )
+
+
 @login_required
 @permission_required("registry.change_syncproject", raise_exception=True)
 @require_POST
@@ -228,12 +249,110 @@ def project_action(request, pk, action):
     project = get_object_or_404(SyncProject, pk=pk, removed_at__isnull=True)
     if action not in ACTIONS:
         return HttpResponseBadRequest("unknown action")
+    operation = _open_operation(project)
+    if operation is not None:
+        return _conflict(project, operation)
     desired, text = ACTIONS[action]
     if project.desired_state != desired:
         SyncProject.objects.filter(pk=project.pk).update(desired_state=desired)
         events.record(project, Event.Level.INFO, f"{request.user.get_username()} {text}",
                       source=Event.Source.USER, user=request.user)
     return redirect("project", pk=project.pk)
+
+
+# --- operations: remove and re-init (§6, §9) -------------------------------------
+
+
+def _pending_changes(project):
+    """Pending database changes per 'file:table' from the last check, plus whether it failed."""
+    pending = {}
+    checked_at = None
+    check_failed = False
+    for status in project.statuses.select_related("connection"):
+        checked_at = max(filter(None, [checked_at, status.checked_at]), default=None)
+        if status.check_error and (status.last_ok_check_at is None or status.last_ok_check_at != status.checked_at):
+            check_failed = True
+        for table, modified in (status.modified_count or {}).items():
+            base = (status.base_count or {}).get(table)
+            if base is not None and modified != base:
+                pending[f"{status.connection.sync_file}:{table}"] = modified - base
+    return pending, checked_at, check_failed
+
+
+@login_required
+@permission_required("registry.add_operation", raise_exception=True)
+def project_operation(request, pk, kind):
+    if kind not in ("remove", "reinit"):
+        return HttpResponseBadRequest("unknown operation")
+    project = get_object_or_404(SyncProject, pk=pk, removed_at__isnull=True)
+    open_op = _open_operation(project)
+    if open_op is not None:
+        return _conflict(project, open_op)
+    pending, checked_at, check_failed = _pending_changes(project)
+    needs_name = bool(pending) or check_failed or kind == "reinit"
+    errors = []
+    if request.method == "POST":
+        if needs_name and request.POST.get("confirm_name", "").strip() != project.mergin_project:
+            errors.append("type the project name exactly to confirm")
+        params = {}
+        if kind == "remove":
+            params["drop_schemas"] = request.POST.get("drop_schemas") == "1"
+        else:
+            init_from = request.POST.get("init_from", project.init_from)
+            if init_from not in ("gpkg", "db"):
+                errors.append("init direction must be gpkg or db")
+            params["init_from"] = init_from
+            params["confirm_pending_loss"] = bool(pending) and not errors
+        if not errors:
+            try:
+                operation = Operation.objects.create(project=project, kind=kind, params=params, requested_by=request.user)
+            except IntegrityError:
+                return _conflict(project, _open_operation(project))
+            events.record(project, Event.Level.INFO,
+                          f"{request.user.get_username()} requested {kind} (operation {operation.pk}, {params})",
+                          source=Event.Source.USER, user=request.user)
+            return redirect("project", pk=project.pk)
+    return render(request, "ui/operation.html", {
+        "project": project, "kind": kind, "connections": list(project.connections.all()),
+        "pending": pending, "checked_at": checked_at, "check_failed": check_failed,
+        "needs_name": needs_name, "errors": errors,
+    })
+
+
+@login_required
+@permission_required("registry.change_syncproject", raise_exception=True)
+@require_POST
+def operation_retry(request, pk):
+    operation = get_object_or_404(Operation, pk=pk)
+    if opsm.request_retry(operation):
+        events.record(operation.project, Event.Level.INFO,
+                      f"{request.user.get_username()} retried operation {operation.pk} at step '{operation.step}'",
+                      source=Event.Source.USER, user=request.user)
+    return redirect("project", pk=operation.project_id)
+
+
+@login_required
+@permission_required("registry.change_syncproject", raise_exception=True)
+@require_POST
+def operation_cancel(request, pk):
+    operation = get_object_or_404(Operation, pk=pk)
+    if not opsm.can_cancel(operation):
+        return HttpResponse("this operation can no longer be cancelled; retry it", status=409, content_type="text/plain")
+    opsm.request_cancel(operation)
+    SyncProject.objects.filter(pk=operation.project_id, process_state="blocked").update(process_state="stopped", process_reason="")
+    events.record(operation.project, Event.Level.INFO, f"{request.user.get_username()} cancelled operation {operation.pk}",
+                  source=Event.Source.USER, user=request.user)
+    return redirect("project", pk=operation.project_id)
+
+
+@login_required
+def project_operation_panel(request, pk):
+    project = get_object_or_404(SyncProject, pk=pk)
+    operation = _open_operation(project) or project.operations.order_by("-requested_at").first()
+    return render(request, "ui/partials/operation.html", {
+        "operation": operation, "cancellable": operation is not None and opsm.can_cancel(operation),
+        "can_operate": request.user.has_perm("registry.change_syncproject"),
+    })
 
 
 # --- add wizard (§9) -------------------------------------------------------------

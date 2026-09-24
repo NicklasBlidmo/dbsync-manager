@@ -9,7 +9,7 @@ Section numbers in code comments (§6, §8, ...) refer to it.
 
 ## Status
 
-Slice 5 of 7 (design §14). The supervisor renders db-sync's config from the
+Slice 6 of 7 (design §14). The supervisor renders db-sync's config from the
 registry, starts one daemon per project with `desired_state = running`,
 stops it on `paused`, restarts it with backoff after a crash, re-attaches to
 daemons left running by a previous supervisor, and every `DBSYNC_CHECK_INTERVAL`
@@ -29,7 +29,11 @@ pgpass file: `post_init` gates `running`, `post_pull` runs after the check
 when the database version advanced, and any configured hook can be run
 from the project page. Alert conditions send one e-mail when they become
 active and one when they resolve, to the project's recipients.
-Not yet: remove/re-init operations (pre_remove hooks run there), log history.
+Remove and re-init are restart-safe operations (design §6): the daemon is
+stopped, the `pre_remove` hook runs before anything destructive, schemas
+are dropped only when asked (remove) or always (re-init), and every step
+is logged on the project page with retry and, before the drop, cancel.
+Not yet: log history.
 
 ## Quick start
 

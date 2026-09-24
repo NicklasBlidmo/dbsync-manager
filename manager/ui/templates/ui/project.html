@@ -8,6 +8,13 @@
   {% include "ui/partials/status.html" %}
 </div>
 
+{% if operation %}
+<h2>Operation</h2>
+<div id="operation" hx-get="{% url 'project_operation_panel' project.pk %}" hx-trigger="every 5s" hx-swap="innerHTML">
+  {% include "ui/partials/operation.html" %}
+</div>
+{% endif %}
+
 <h2>Log <span class="muted">(tail of dbsync.log, live; stays where you scrolled unless you are at the end)</span></h2>
 <div id="log" class="logbox" hx-get="{% url 'project_log' project.pk %}" hx-trigger="every 10s" hx-swap="innerHTML">
   {% include "ui/partials/log.html" %}

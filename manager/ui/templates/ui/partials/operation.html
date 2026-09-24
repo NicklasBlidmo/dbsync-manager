@@ -1,0 +1,36 @@
+{% if operation %}
+<div class="panel">
+  <p>
+    <strong>{{ operation.kind }}</strong> operation {{ operation.pk }}
+    <span class="badge {% if operation.status == 'done' %}ok{% elif operation.status == 'failed' %}bad{% elif operation.status == 'cancelled' %}muted{% else %}info{% endif %}">{{ operation.status }}</span>
+    <span class="muted">requested {{ operation.requested_at|date:"Y-m-d H:i" }}{% if operation.requested_by %} by {{ operation.requested_by.get_username }}{% endif %}
+      {% if operation.finished_at %} · finished {{ operation.finished_at|date:"Y-m-d H:i" }}{% endif %}</span>
+    {% if can_operate and operation.status == "failed" %}
+    <span style="float:right">
+      <form class="inline" method="post" action="{% url 'operation_retry' operation.pk %}">{% csrf_token %}<button type="submit">Retry step '{{ operation.step }}'</button></form>
+      {% if cancellable %}<form class="inline" method="post" action="{% url 'operation_cancel' operation.pk %}">{% csrf_token %}<button type="submit">Cancel</button></form>
+      {% else %}<span class="muted" title="schemas have started to drop; only retry can finish">cancel not possible</span>{% endif %}
+    </span>
+    {% elif can_operate and operation.is_open and cancellable %}
+    <span style="float:right"><form class="inline" method="post" action="{% url 'operation_cancel' operation.pk %}">{% csrf_token %}<button type="submit">Cancel</button></form></span>
+    {% endif %}
+  </p>
+  {% if operation.error %}<div class="notice bad">{{ operation.error }}</div>{% endif %}
+  <table>
+    <thead><tr><th>#</th><th>Step</th><th>Started</th><th>Result</th><th>Detail</th></tr></thead>
+    <tbody>
+    {% for entry in operation.steps %}
+      <tr>
+        <td class="muted">{{ forloop.counter }}</td>
+        <td>{{ entry.name }}{% if entry.attempt > 1 %} <span class="muted">(attempt {{ entry.attempt }})</span>{% endif %}</td>
+        <td class="muted">{{ entry.started_at|slice:"11:19" }}</td>
+        <td>{% if entry.ok %}<span class="badge ok">ok</span>{% elif entry.ok is False %}<span class="badge bad">failed</span>{% else %}<span class="badge info">{{ entry.detail|default:"running" }}</span>{% endif %}</td>
+        <td class="muted">{% if entry.ok is not None %}{{ entry.detail }}{% endif %}</td>
+      </tr>
+    {% empty %}
+      <tr><td colspan="5" class="muted">Waiting for the supervisor's next tick.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}

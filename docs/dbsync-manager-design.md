@@ -572,7 +572,19 @@ and retries.
 After `reset` the operation is closed, the block is lifted, and step 1 of
 the next tick starts the child normally. db-sync runs init from
 `init_from`, the base schema comments appear, and the `post_init` hook runs
-through loop step 4 as for a new project.
+through loop step 4 as for a new project. `reset` sets `desired_state =
+running` (a re-init is a request to sync again) and clears health and the
+active conditions, since they described schemas that no longer exist.
+
+Implementation notes (2026-09-24): operations run at the start of every
+tick, before the projects are reconciled, so a `stop_child` SIGTERM is
+seen as a stop and not a crash. While an operation is open the project is
+reconciled only for the child's exit: no start, no hook requests, no
+consistency check. The web layer answers 409 to pause, resume, "run hook
+now" and a second operation; the project page shows the step log and
+offers retry, and cancel while allowed. Every step's side effects live in
+`SupervisorIO`; the machine itself (`supervisor/operations.py`) has no
+database or process access and is tested with a fake.
 
 **Schema collisions** are prevented before an operation is ever needed: the
 unique constraints on `sync_connection` (§5) reject a second project with
@@ -1035,9 +1047,11 @@ derived names against the real server, and the full db-tagged suite of
 field-tested 2026-09-23: manual and automatic post_init paths, the block
 and unblock, pgpass through psql, alert and resolved mails through
 Microsoft 365 direct send; post_pull and the timeout not yet exercised);
-(6) remove and re-init
-as operations; (7) log history. The JSON API is added when `akdb project
-close` needs it.
+(6) remove and re-init as operations (code 2026-09-24, field test
+pending: remove p3922_test with drop, re-init it, interrupt one in the
+middle); (7) log history. Then the Bönsta takeover (§15 order, step 3)
+with the ak-db hooks bind-mounted. The JSON API is added when `akdb
+project close` needs it.
 v1.1: OIDC login; per-project notification channels beyond e-mail (webhook);
 **content-level consistency check** as a spike: a normalised per-row hash
 per table computed in both SQLite and PostgreSQL (geometry as WKB, floats

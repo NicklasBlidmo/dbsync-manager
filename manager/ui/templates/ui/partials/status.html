@@ -5,17 +5,22 @@
     <span class="badge {{ project.process_state|badge }}">process: {{ project.process_state }}</span>
     <span class="badge {{ project.health|badge }}">health: {{ project.get_health_display }}</span>
     {% if project.health_since %}<span class="muted">since {{ project.health_since|date:"Y-m-d H:i" }}</span>{% endif %}
-    {% if can_operate %}
+    {% if can_operate and not project.removed_at %}
       <span style="float:right">
+        {% if operation_open %}
+        <span class="muted" title="operation {{ operation.pk }} is open">actions disabled while an operation is open</span>
+        {% else %}
         {% if project.desired_state == "running" %}
         <form class="inline" method="post" action="{% url 'project_action' project.pk 'pause' %}">{% csrf_token %}<button type="submit">Pause</button></form>
         {% else %}
         <form class="inline" method="post" action="{% url 'project_action' project.pk 'resume' %}">{% csrf_token %}<button type="submit">Resume</button></form>
         {% endif %}
-        <button disabled title="operations slice (next)">Re-init</button>
-        <button disabled title="operations slice (next)">Remove</button>
+        <a class="button" href="{% url 'project_operation' project.pk 'reinit' %}">Re-init</a>
+        <a class="button" href="{% url 'project_operation' project.pk 'remove' %}">Remove</a>
+        {% endif %}
       </span>
     {% endif %}
+    {% if project.removed_at %}<span class="badge muted">removed {{ project.removed_at|date:"Y-m-d H:i" }}</span>{% endif %}
   </p>
   {% if project.process_reason %}<pre style="max-height:10rem">{{ project.process_reason }}</pre>{% endif %}
   {% for key, since in active_conditions %}
