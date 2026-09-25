@@ -11,6 +11,7 @@ urlpatterns = [
     path("projects/<int:pk>/log/", views.project_log, name="project_log"),
     path("projects/<int:pk>/action/<slug:action>/", views.project_action, name="project_action"),
     path("projects/<int:pk>/hooks/", views.project_hooks, name="project_hooks"),
+    path("projects/<int:pk>/runs/", views.project_runs, name="project_runs"),
     path("projects/<int:pk>/hooks/run/", views.project_run_hook, name="project_run_hook"),
     path("projects/<int:pk>/operation/<slug:kind>/", views.project_operation, name="project_operation"),
     path("projects/<int:pk>/operation/", views.project_operation_panel, name="project_operation_panel"),

@@ -31,7 +31,7 @@ from registry import events
 from registry.crypto import SecretError
 from registry.models import Event, Operation, SyncConnection, SyncProject, SyncRun, SyncStatus
 
-from . import check, conditions, dbinspect, hooks, operations, processes
+from . import check, conditions, dbinspect, hooks, housekeeping, logtail, operations, processes
 from .config_render import ConfigRenderError, render_config, write_config
 from .logs import rotate_if_needed, tail
 
@@ -74,6 +74,7 @@ class Runtime:
     last_check_at: float = 0.0
     stuck_restart_at: float | None = None
     last_post_pull_version: int | None = None
+    tail: logtail.TailState | None = None   # log position and error de-duplication
 
 
 class Supervisor:
@@ -87,6 +88,7 @@ class Supervisor:
         self.runtimes: dict[int, Runtime] = {}
         self.open_operations: dict[int, Operation] = {}
         self.io = SupervisorIO(self)
+        self._last_prune_day = None
 
     # --- lifecycle -----------------------------------------------------------
 
@@ -243,6 +245,11 @@ class Supervisor:
         running = sum(1 for rt in self.runtimes.values() if rt.child and rt.child.alive)
         log.info("tick: %d projects, %d daemons running", len(projects), running)
 
+        today = timezone.localdate()
+        if self._last_prune_day != today:
+            self._last_prune_day = today
+            housekeeping.prune()
+
     def _reconcile(self, project):
         rt = self.runtimes.setdefault(project.pk, Runtime())
         now = time.monotonic()
@@ -357,6 +364,9 @@ class Supervisor:
 
     def _observe(self, project, rt):
         paths = self._paths(project.pk)
+        # Read new log lines before rotating, or copy-and-truncate would
+        # discard lines not yet ingested.
+        self._pump_log(project, rt, paths)
         max_bytes = settings.DBSYNC_LOG_MAX_MB * 1024 * 1024
         for name in ("log", "stderr"):
             if rotate_if_needed(paths[name], max_bytes, settings.DBSYNC_LOG_KEEP):
@@ -456,6 +466,22 @@ class Supervisor:
             prev = rt.last_post_pull_version
             rt.last_post_pull_version = db_version
             hooks.run_hook(project, hook, "post_pull", db_version=db_version, prev_db_version=prev)
+
+    # --- log history (§6 classification) ---------------------------------------
+
+    def _pump_log(self, project, rt, paths):
+        state_path = paths["work_dir"] / logtail.STATE_NAME
+        if rt.tail is None:
+            rt.tail = logtail.TailState.load(state_path)
+        try:
+            counts = logtail.pump(project, paths["log"], state_path, rt.tail)
+        except DatabaseError:
+            raise
+        except Exception:  # noqa: BLE001 - history must never break the loop
+            log.exception("log ingest failed for %s", project)
+            return
+        if counts.get("runs") or counts.get("events"):
+            log.info("log for %s: %s", project, counts)
 
     # --- step 2: stop --------------------------------------------------------
 
@@ -562,6 +588,10 @@ class Supervisor:
             conditions.resolve(project, "process_crashed", "resolved: db-sync has stayed up")
 
         self._maybe_post_pull(project, rt)
+        # Pull runs are confirmed by the database, never by a log line (§6).
+        confirmed = logtail.close_confirmed_pulls(project, self._project_db_version(project))
+        if confirmed:
+            log.info("check: %s confirmed %d pull run(s)", project, confirmed)
         log.info("check: %s health=%s conditions=%s", project, health, sorted(wanted) or "-")
 
     # --- helpers -------------------------------------------------------------

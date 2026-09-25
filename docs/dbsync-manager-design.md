@@ -639,6 +639,20 @@ module so it can be replaced by a structured channel if db-sync gains one (a
 suggestion for the rework: emit JSON lines on a file descriptor, and log an
 explicit "applied vN to database" line after the comment is written).
 
+Implementation (2026-09-25, `supervisor/logtail.py`): the file is read
+incrementally each tick from a persisted offset (`logtail.json` in the
+work dir), before rotation so copy-and-truncate loses nothing; a shrunken
+file resets the offset. Continuation lines without the log prefix
+(tracebacks) join the previous record. `--- push finished` is a
+server-confirmed push and is recorded as ok; `--- pull aborted` and a
+`GEODIFF:` error close the open pull run as failed. Identical error
+messages within an hour are counted rather than repeated ("repeated N
+more times" on the next distinct event), which keeps a 403 push loop to
+one event per hour. The project page lists the last twenty pulls and
+pushes; a pull reads "checkout only" until the check confirms it. Events
+and runs older than `DBSYNC_RETENTION_DAYS` are pruned once a day, audit
+events excepted.
+
 Init as a background job: `dbsync_daemon.py` runs init itself on start, so
 "initializing" is simply the state until the base schema comment appears.
 Progress is shown as which connections have their base schema yet.
@@ -1059,10 +1073,11 @@ derived names against the real server, and the full db-tagged suite of
 field-tested 2026-09-23: manual and automatic post_init paths, the block
 and unblock, pgpass through psql, alert and resolved mails through
 Microsoft 365 direct send; post_pull and the timeout not yet exercised);
-(6) remove and re-init as operations (code 2026-09-24, field test
-pending: remove p3922_test with drop, re-init it, interrupt one in the
-middle); (7) log history. Then the Bönsta takeover (§15 order, step 3)
-with the ak-db hooks bind-mounted. The JSON API is added when `akdb
+(6) remove and re-init as operations (done and field-tested 2026-09-24: re-init, an
+interrupted operation resumed after a restart, a failed pre_remove kept
+the schemas, remove with drop after the stale-snapshot fix); (7) log
+history (code 2026-09-25, field test pending). Then the Bönsta takeover
+(§15 order, step 3) with the ak-db hooks bind-mounted. The JSON API is added when `akdb
 project close` needs it.
 v1.1: OIDC login; per-project notification channels beyond e-mail (webhook);
 hooks and operation steps in a worker so a long hook does not stall the

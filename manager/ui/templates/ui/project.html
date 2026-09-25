@@ -33,6 +33,11 @@
 })();
 </script>
 
+<h2>Pulls and pushes <span class="muted">(last 20 from the log; a pull is "applied" only once the check sees the database at that version, design §6)</span></h2>
+<div id="runs" hx-get="{% url 'project_runs' project.pk %}" hx-trigger="every 15s" hx-swap="innerHTML">
+  {% include "ui/partials/runs.html" %}
+</div>
+
 <h2>Hooks <span class="muted">(last 10 runs; output is masked and capped, design §8)</span></h2>
 <div id="hooks" hx-get="{% url 'project_hooks' project.pk %}" hx-trigger="every 15s" hx-swap="innerHTML">
   {% include "ui/partials/hooks.html" %}

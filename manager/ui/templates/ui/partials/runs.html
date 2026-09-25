@@ -1,0 +1,19 @@
+{% load ui_extras %}
+{% if runs %}
+<table>
+  <thead><tr><th>Started</th><th>Kind</th><th class="num">Version</th><th>Result</th><th>Detail</th></tr></thead>
+  <tbody>
+  {% for run in runs %}
+    <tr>
+      <td class="muted" style="white-space:nowrap">{{ run.started_at|date:"Y-m-d H:i:s" }}</td>
+      <td>{{ run.kind }}</td>
+      <td class="num">{{ run.checkout_version|version }}</td>
+      <td><span class="badge {% if run.state == 'applied' or run.state == 'ok' %}ok{% elif run.state == 'failed' %}bad{% else %}info{% endif %}" title="{% if run.state == 'checkout only' %}the checkout reached this version; the database has not confirmed it yet{% endif %}">{{ run.state }}</span></td>
+      <td class="muted">{{ run.detail|truncatechars:120 }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted">No pull or push seen in the log yet.</p>
+{% endif %}

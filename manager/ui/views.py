@@ -137,6 +137,7 @@ def project_detail(request, pk):
     context["can_operate"] = request.user.has_perm("registry.change_syncproject")
     context.update(_log_context(project))
     context.update(_hooks_context(project))
+    context.update(_runs_context(project))
     return render(request, "ui/project.html", context)
 
 
@@ -193,6 +194,31 @@ def _hooks_context(project):
         run.duration = summary.get("duration_s")
         run.requested_by = summary.get("requested_by")
     return {"project": project, "hooks": [(k, h) for k, h in configured if h], "hook_runs": runs}
+
+
+RUNS_ON_PAGE = 20
+
+
+def _runs_context(project):
+    from registry.models import SyncRun
+
+    runs = list(project.runs.exclude(kind=SyncRun.Kind.HOOK).order_by("-started_at")[:RUNS_ON_PAGE])
+    for run in runs:
+        summary = run.summary or {}
+        if run.ok is True:
+            run.state = "ok" if run.kind != "pull" else "applied"
+        elif run.ok is False:
+            run.state = "failed"
+        else:
+            run.state = "checkout only" if run.kind == "pull" else "unknown"
+        run.detail = summary.get("failed") or summary.get("line", "")
+    return {"runs": runs}
+
+
+@login_required
+def project_runs(request, pk):
+    project = get_object_or_404(SyncProject, pk=pk)
+    return render(request, "ui/partials/runs.html", _runs_context(project))
 
 
 @login_required

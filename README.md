@@ -9,7 +9,7 @@ Section numbers in code comments (§6, §8, ...) refer to it.
 
 ## Status
 
-Slice 6 of 7 (design §14). The supervisor renders db-sync's config from the
+Slice 7 of 7 (design §14). The supervisor renders db-sync's config from the
 registry, starts one daemon per project with `desired_state = running`,
 stops it on `paused`, restarts it with backoff after a crash, re-attaches to
 daemons left running by a previous supervisor, and every `DBSYNC_CHECK_INTERVAL`
@@ -33,7 +33,12 @@ Remove and re-init are restart-safe operations (design §6): the daemon is
 stopped, the `pre_remove` hook runs before anything destructive, schemas
 are dropped only when asked (remove) or always (re-init), and every step
 is logged on the project page with retry and, before the drop, cancel.
-Not yet: log history.
+The daemon's log is followed and classified into pull/push runs and events
+(a pull counts as applied only when the check sees the database at that
+version; geodiff NOTICE lines are info, repeated errors are counted), and
+events and runs older than `DBSYNC_RETENTION_DAYS` are pruned daily.
+All seven slices of v1 are in; remaining: field test of the log history,
+then the Bönsta takeover (design §15).
 
 ## Quick start
 
