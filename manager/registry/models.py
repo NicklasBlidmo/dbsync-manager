@@ -204,7 +204,7 @@ class SyncProject(OwnedModel):
 
     schema_prefix = models.CharField(max_length=50)
     init_from = models.CharField(max_length=4, choices=InitFrom.choices, default=InitFrom.GPKG)
-    sleep_time = models.PositiveIntegerField(default=10, help_text="db-sync daemon sleep between cycles, seconds")
+    sleep_time = models.PositiveIntegerField(default=60, help_text="db-sync daemon sleep between cycles, seconds")
 
     desired_state = models.CharField(max_length=10, choices=DesiredState.choices, default=DesiredState.RUNNING)
     process_state = models.CharField(

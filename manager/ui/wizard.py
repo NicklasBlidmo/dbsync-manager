@@ -47,7 +47,7 @@ class WizardData:
     project_id: str = ""
     prefix: str = ""
     init_from: str = "gpkg"
-    sleep_time: int = 10
+    sleep_time: int = 60
     hooks: dict = field(default_factory=dict)      # kind -> Hook
     notify_emails: list = field(default_factory=list)
     rows: list = field(default_factory=list)
@@ -106,7 +106,7 @@ def parse(post) -> tuple[WizardData, list]:
         errors.append("init direction must be gpkg or db")
 
     try:
-        data.sleep_time = int(post.get("sleep_time", "10"))
+        data.sleep_time = int(post.get("sleep_time", "60"))
         if data.sleep_time < 1:
             raise ValueError
     except ValueError:

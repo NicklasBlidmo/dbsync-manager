@@ -43,7 +43,7 @@
         <option value="gpkg">GeoPackage (create database schemas)</option>
         <option value="db">Database (existing modified schema; create GeoPackage in Mergin)</option>
       </select></label>
-    <label>Sleep between cycles (s)<br><input name="sleep_time" type="number" min="1" value="10"></label>
+    <label>Sleep between cycles (s)<br><input name="sleep_time" type="number" min="1" value="60"></label>
     {% for kind, choices in hooks.items %}
     <label>{{ kind }} hook<br>
       <select name="{{ kind }}_hook"><option value="">none</option>

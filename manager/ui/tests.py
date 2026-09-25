@@ -161,7 +161,8 @@ class WizardViewTests(TestCase):
         self.assertContains(self.client.get(reverse("add_workspaces"), {"account": self.account.pk}), "ak (owner)")
         response = self.client.get(reverse("add_search"), {"account": self.account.pk, "workspace": "ak", "q": "bon", "database": self.database.pk})
         self.assertContains(response, "ak/bonsta")
-        self.assertContains(response, "Choose")
+        # Choose submits the pick form, so the selects are read at click time.
+        self.assertContains(response, 'form="pick" name="project" value="ak/bonsta"')
         response = self.client.get(reverse("add_project"), {"account": self.account.pk, "database": self.database.pk, "project": "ak/bonsta"})
         self.assertContains(response, "step 2 of 3")
         self.assertContains(response, 'value="bonsta"')                 # default prefix

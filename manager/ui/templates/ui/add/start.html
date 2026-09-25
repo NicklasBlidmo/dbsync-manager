@@ -5,7 +5,11 @@
 {% if not accounts or not databases %}
 <div class="notice bad">Add a Mergin account and a database under Settings (admin) first.</div>
 {% endif %}
-<form class="panel" id="pick" onsubmit="return false">
+<!-- The Choose buttons in the results belong to this form (form="pick"), so
+     the account, database and workspace selects are read at click time, not
+     at search time. Enter in the search field must not submit it. -->
+<form class="panel" id="pick" method="get" action="{% url 'add_project' %}"
+      onsubmit="return !!(event.submitter && event.submitter.name === 'project')">
   <div class="grid">
     <label>Mergin account<br>
       <select name="account" hx-get="{% url 'add_workspaces' %}" hx-target="#workspace" hx-trigger="change, load">
