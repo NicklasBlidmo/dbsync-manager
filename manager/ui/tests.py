@@ -3,6 +3,8 @@ UI tests (tagged `db`: they need users, groups and rows). Run with the
 compose profile `test`.
 """
 
+from urllib.parse import urlencode
+
 from django.contrib.auth.models import Group, User
 from django.test import TestCase, tag
 from django.urls import reverse
@@ -297,28 +299,44 @@ class WizardViewTests(TestCase):
 
     def test_names_partial_follows_the_ticked_files_only(self):
         # Derived from the prefix for the picked files.
-        response = self.client.get(reverse("add_names"), {"prefix": "P3922 Test", "pick": ["1-punkter.gpkg"]})
+        response = self.client.post(reverse("add_names"), {"prefix": "P3922 Test", "pick": ["1-punkter.gpkg"]})
         self.assertContains(response, "p3922_test_s_punkter")
         self.assertContains(response, 'name="names_prefix" value="p3922_test"')
         # Nothing picked is an empty table, even if the previous table's rows come along.
-        response = self.client.get(reverse("add_names"), {"prefix": "p3922_test", "names_prefix": "p3922_test",
-                                                          "file": ["1-punkter.gpkg"], "modified": ["x_s"], "base": ["x_b"]})
+        response = self.client.post(reverse("add_names"), {"prefix": "p3922_test", "names_prefix": "p3922_test",
+                                                           "file": ["1-punkter.gpkg"], "modified": ["x_s"], "base": ["x_b"]})
         self.assertContains(response, "Select at least one GeoPackage")
         self.assertNotContains(response, "1-punkter.gpkg<input")
         # Typed names survive for files still picked; rows for unpicked files are dropped.
-        response = self.client.get(reverse("add_names"), {
+        response = self.client.post(reverse("add_names"), {
             "prefix": "p3922_test", "names_prefix": "p3922_test", "pick": ["1-punkter.gpkg"],
             "file": ["1-punkter.gpkg", "d-foto.gpkg"], "modified": ["custom_s", "foto_s"], "base": ["custom_b", "foto_b"],
         })
         self.assertContains(response, 'value="custom_s"')
         self.assertNotContains(response, "foto_s")
         # A changed prefix re-derives every row.
-        response = self.client.get(reverse("add_names"), {
+        response = self.client.post(reverse("add_names"), {
             "prefix": "other", "names_prefix": "p3922_test", "pick": ["1-punkter.gpkg"],
             "file": ["1-punkter.gpkg"], "modified": ["custom_s"], "base": ["custom_b"],
         })
         self.assertContains(response, 'value="other_s_punkter"')
         self.assertNotContains(response, "custom_s")
+
+    def test_names_partial_is_a_post_and_takes_a_large_project(self):
+        # The whole step-2 form rides along (hx-include="#add"). As a GET, 18
+        # files already passed gunicorn's 4094-byte request line and the
+        # table stopped refreshing (2026-09-28, 3448_brasan9); so it is a POST.
+        self.assertEqual(self.client.get(reverse("add_names"), {"prefix": "p", "pick": ["a.gpkg"]}).status_code, 405)
+        files = [f"survey-area-{i:02d}-a-rather-long-geopackage-file-name-with-many-words.gpkg" for i in range(40)]
+        data = {
+            "prefix": "p3448_brasan9", "names_prefix": "p3448_brasan9", "pick": files,
+            "file": files, "modified": [f"custom_s_{i}" for i in range(40)], "base": [f"custom_b_{i}" for i in range(40)],
+        }
+        self.assertGreater(len(urlencode(data, doseq=True)), 4094)
+        response = self.client.post(reverse("add_names"), data)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content.decode().count('name="file"'), 40)
+        self.assertContains(response, 'value="custom_s_39"')
 
     def test_preview_with_nothing_picked_is_refused(self):
         response = self.client.post(reverse("add_preview"), self.form(pick=[]))

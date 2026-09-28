@@ -23,7 +23,7 @@
   {% for f in files %}
     <label class="block">
       <input type="checkbox" name="pick" value="{{ f.path }}" {% if f.conflict_copy %}disabled{% elif f.checked %}checked{% endif %}
-             hx-get="{% url 'add_names' %}" hx-target="#names" hx-include="#add" hx-trigger="change">
+             hx-post="{% url 'add_names' %}" hx-target="#names" hx-include="#add" hx-trigger="change">
       {{ f.path }} <span class="muted">{% if f.size %}({{ f.size|filesizeformat }}){% endif %}</span>
       {% if f.conflict_copy %}<span class="badge bad">edit-conflict copy, cannot sync</span>{% endif %}
       {% if f.has_conflict %}<span class="badge warn">has an edit-conflict sibling in the project</span>{% endif %}
@@ -36,7 +36,7 @@
   <h2 class="section-title">Schema names</h2>
   <div class="panel">
     <label>Prefix <input name="prefix" value="{{ prefix }}" pattern="[a-z_][a-z0-9_]*" maxlength="63"
-           hx-get="{% url 'add_names' %}" hx-target="#names" hx-include="#add" hx-trigger="keyup changed delay:400ms, change"></label>
+           hx-post="{% url 'add_names' %}" hx-target="#names" hx-include="#add" hx-trigger="keyup changed delay:400ms, change"></label>
     <span class="muted">Names below are derived as prefix_s_stem and prefix_b_stem; edit them per row after choosing the prefix (changing the prefix or the ticked files re-derives all rows).</span>
     <div id="names">{% include "ui/add/partials/names_table.html" %}</div>
   </div>

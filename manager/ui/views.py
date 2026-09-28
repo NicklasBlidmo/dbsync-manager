@@ -603,21 +603,28 @@ def add_project(request):
 
 @login_required
 @can_add
-@require_GET
+@require_POST
 def add_names(request):
-    """The editable schema-name table for the ticked files and the current prefix."""
-    prefix = naming.sanitize_identifier(request.GET.get("prefix", ""))
+    """The editable schema-name table for the ticked files and the current prefix.
+
+    A POST, not a GET: the whole step-2 form travels with the request
+    (hx-include="#add"), and with 18 GeoPackages the query string passed
+    gunicorn's 4094-byte request-line limit, so the server answered 400
+    and the table never refreshed (2026-09-28). The form's CSRF token is
+    included along with the rest of it.
+    """
+    prefix = naming.sanitize_identifier(request.POST.get("prefix", ""))
     # The ticked checkboxes ("pick") are the file set; an empty list is an
     # empty table. Names the operator typed (the previous table's rows,
     # included through hx-include) are kept for files still picked, unless
     # the prefix changed, which re-derives every row.
     picked = []
-    for f in request.GET.getlist("pick"):
+    for f in request.POST.getlist("pick"):
         if f and f not in picked:
             picked.append(f)
     typed = {}
-    if request.GET.get("names_prefix", "") == prefix:
-        typed = wizard.names_by_file(request.GET) or {}
+    if request.POST.get("names_prefix", "") == prefix:
+        typed = wizard.names_by_file(request.POST) or {}
     rows = []
     for f in picked:
         m, b = typed.get(f) or naming.derive_schema_names(prefix, f)
