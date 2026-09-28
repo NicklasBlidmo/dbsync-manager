@@ -54,7 +54,10 @@ class WizardData:
     ack: bool = False
 
     def as_hidden_fields(self):
-        """(name, value) pairs that carry the data through the preview form."""
+        """(name, value) pairs that carry the data through the preview form.
+
+        `pick` is what decides the file set (one source of truth, also on
+        Create); `file`/`modified`/`base` carry the names per file."""
         pairs = [
             ("account", self.account.pk if self.account else ""),
             ("database", self.database.pk if self.database else ""),
@@ -69,8 +72,18 @@ class WizardData:
             hook = self.hooks.get(kind)
             pairs.append((f"{kind}_hook", hook.pk if hook else ""))
         for row in self.rows:
-            pairs += [("file", row.sync_file), ("modified", row.modified), ("base", row.base)]
+            pairs += [("pick", row.sync_file), ("file", row.sync_file), ("modified", row.modified), ("base", row.base)]
         return pairs
+
+
+def names_by_file(params):
+    """{file: (modified, base)} from the parallel file/modified/base lists, or None if they disagree."""
+    files = params.getlist("file")
+    modified = params.getlist("modified")
+    base = params.getlist("base")
+    if not (len(files) == len(modified) == len(base)):
+        return None
+    return {f: (m.strip(), b.strip()) for f, m, b in zip(files, modified, base) if f}
 
 
 def parse(post) -> tuple[WizardData, list]:
@@ -135,28 +148,33 @@ def parse(post) -> tuple[WizardData, list]:
             continue
         data.notify_emails.append(address)
 
-    files = post.getlist("file")
-    modified = post.getlist("modified")
-    base = post.getlist("base")
-    if not files:
-        errors.append("tick at least one GeoPackage")
-    if not (len(files) == len(modified) == len(base)):
+    # The ticked checkboxes are the file set; an empty list is an empty list.
+    # The names table's rows only supply names, keyed by file; a picked file
+    # without a row gets derived names, a row without a pick is dropped.
+    picked = []
+    for sync_file in post.getlist("pick"):
+        if sync_file and sync_file not in picked:
+            picked.append(sync_file)
+    names = names_by_file(post)
+    if names is None:
         errors.append("schema name rows do not match the files (reload the page)")
-    else:
-        seen = {}
-        for sync_file, mod, bas in zip(files, modified, base):
-            mod, bas = mod.strip(), bas.strip()
-            for label, name in (("modified", mod), ("base", bas)):
-                if not naming.is_valid_identifier(name):
-                    errors.append(f"{sync_file}: {label} schema '{name}' is not a valid identifier")
-                elif name in seen:
-                    errors.append(f"schema '{name}' is used twice ({seen[name]} and {sync_file})")
-                seen[name] = sync_file
-            if mod == bas:
-                errors.append(f"{sync_file}: modified and base schema must differ")
-            if naming.is_conflict_copy(sync_file):
-                errors.append(f"{sync_file} is an edit-conflict copy and will not sync")
-            data.rows.append(Row(sync_file=sync_file, modified=mod, base=bas))
+        names = {}
+    if not picked:
+        errors.append("Select at least one GeoPackage")
+    seen = {}
+    for sync_file in picked:
+        mod, bas = names.get(sync_file) or naming.derive_schema_names(data.prefix or "project", sync_file)
+        for label, name in (("modified", mod), ("base", bas)):
+            if not naming.is_valid_identifier(name):
+                errors.append(f"{sync_file}: {label} schema '{name}' is not a valid identifier")
+            elif name in seen:
+                errors.append(f"schema '{name}' is used twice ({seen[name]} and {sync_file})")
+            seen[name] = sync_file
+        if mod == bas:
+            errors.append(f"{sync_file}: modified and base schema must differ")
+        if naming.is_conflict_copy(sync_file):
+            errors.append(f"{sync_file} is an edit-conflict copy and will not sync")
+        data.rows.append(Row(sync_file=sync_file, modified=mod, base=bas))
 
     data.ack = post.get("ack") == "1"
     return data, errors

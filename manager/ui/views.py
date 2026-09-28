@@ -577,18 +577,12 @@ def add_project(request):
     except Exception as exc:  # noqa: BLE001
         return render(request, "ui/add/error.html", {"message": f"cannot read project {project_path}: {exc}"})
     prefix = naming.default_prefix(project_path)
-    # Installation default: files matching the patterns start unticked
-    # (applied once here, so the reduced selection shows without JS).
-    from registry.models import InstallationSettings
-
-    pattern_text = InstallationSettings.load().default_deselect_patterns
-    patterns = naming.parse_patterns(pattern_text)
     selectable = [f for f in files if not f["conflict_copy"]]
     for f in selectable:
-        f["checked"] = not naming.matches_any(f["path"], patterns)
+        f["checked"] = True
     rows = [
         {"file": f["path"], "modified": m, "base": b}
-        for f in selectable if f["checked"]
+        for f in selectable
         for m, b in [naming.derive_schema_names(prefix, f["path"])]
     ]
     return render(request, "ui/add/project.html", {
@@ -600,8 +594,7 @@ def add_project(request):
         "permission": mergin_api.permission(info),
         "files": files,
         "selectable_count": len(selectable),
-        "checked_count": sum(1 for f in selectable if f["checked"]),
-        "deselect_patterns": pattern_text,
+        "checked_count": len(selectable),
         "prefix": prefix,
         "rows": rows,
         "hooks": {kind: Hook.objects.filter(kind=kind) for kind in ("post_init", "pre_remove", "post_pull")},
@@ -614,14 +607,21 @@ def add_project(request):
 def add_names(request):
     """The editable schema-name table for the ticked files and the current prefix."""
     prefix = naming.sanitize_identifier(request.GET.get("prefix", ""))
-    # The ticked checkboxes are "pick"; the hidden "file" inputs of the
-    # previous table come along through hx-include and are ignored here.
-    files = [f for f in request.GET.getlist("pick") if f] or [f for f in request.GET.getlist("file") if f]
-    rows = [
-        {"file": f, "modified": m, "base": b}
-        for f in files
-        for m, b in [naming.derive_schema_names(prefix, f)]
-    ]
+    # The ticked checkboxes ("pick") are the file set; an empty list is an
+    # empty table. Names the operator typed (the previous table's rows,
+    # included through hx-include) are kept for files still picked, unless
+    # the prefix changed, which re-derives every row.
+    picked = []
+    for f in request.GET.getlist("pick"):
+        if f and f not in picked:
+            picked.append(f)
+    typed = {}
+    if request.GET.get("names_prefix", "") == prefix:
+        typed = wizard.names_by_file(request.GET) or {}
+    rows = []
+    for f in picked:
+        m, b = typed.get(f) or naming.derive_schema_names(prefix, f)
+        rows.append({"file": f, "modified": m, "base": b})
     return render(request, "ui/add/partials/names_table.html", {"rows": rows, "prefix": prefix})
 
 

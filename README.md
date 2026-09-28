@@ -72,12 +72,10 @@ credential has been saved it cannot be replaced (design §10).
 
 ### First-time setup
 
-Under Settings (admin) → Registry: a Mergin account, a database, and, if
-wanted, the installation settings row ("Settings (installation)"). Its
-*default deselect patterns* pre-fill the add wizard: comma-separated
-file-name globs such as `m-*.gpkg, d-*.gpkg` whose matching GeoPackages
-start unticked in step 2. The tool itself has no opinion about file
-naming; leave it empty and everything starts ticked.
+Under Settings (admin) → Registry: a Mergin account and a database. The
+add wizard starts with every GeoPackage of a project ticked; Select all
+and Select none are on the file list. The tool has no opinion about file
+naming.
 
 ### When it does not start
 

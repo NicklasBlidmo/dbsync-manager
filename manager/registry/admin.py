@@ -13,7 +13,6 @@ from .models import (
     Database,
     Event,
     Hook,
-    InstallationSettings,
     MerginAccount,
     Operation,
     SyncConnection,
@@ -21,28 +20,6 @@ from .models import (
     SyncRun,
     SyncStatus,
 )
-
-
-@admin.register(InstallationSettings)
-class InstallationSettingsAdmin(admin.ModelAdmin):
-    """The one settings row: add only while it does not exist, never delete."""
-
-    fields = ["default_deselect_patterns", "updated_at"]
-    readonly_fields = ["updated_at"]
-
-    def has_add_permission(self, request):
-        return super().has_add_permission(request) and not InstallationSettings.objects.exists()
-
-    def has_delete_permission(self, request, obj=None):
-        return False
-
-    def changelist_view(self, request, extra_context=None):
-        # One row: go straight to it (creating it on first visit).
-        from django.shortcuts import redirect
-        from django.urls import reverse
-
-        row = InstallationSettings.load()
-        return redirect(reverse("admin:registry_installationsettings_change", args=[row.pk]))
 
 
 class OwnedAdmin(admin.ModelAdmin):
