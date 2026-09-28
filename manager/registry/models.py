@@ -120,6 +120,41 @@ class Database(OwnedModel):
         return " ".join(parts)
 
 
+# --- installation settings (one row) -----------------------------------------
+
+
+class InstallationSettings(models.Model):
+    """Per-installation defaults, one row (pk 1), edited in the admin.
+
+    Nothing here is a convention of the tool: the repository stays neutral
+    about naming; whatever an organisation wants pre-filled lives in this row.
+    """
+
+    default_deselect_patterns = models.CharField(
+        max_length=500, blank=True, default="",
+        verbose_name="default deselect patterns (add wizard)",
+        help_text="Comma-separated glob patterns matched case-insensitively against GeoPackage file names; "
+                  "matching files start unticked in the add wizard, e.g. m-*.gpkg, d-*.gpkg. Empty = all ticked.",
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "installation settings"
+        verbose_name_plural = "Settings (installation)"
+
+    def __str__(self):
+        return "Installation settings"
+
+    def save(self, *args, **kwargs):
+        self.pk = 1   # the one row; a second save lands on the same one
+        super().save(*args, **kwargs)
+
+    @classmethod
+    def load(cls):
+        row, _ = cls.objects.get_or_create(pk=1)
+        return row
+
+
 # --- hooks (§8) ---------------------------------------------------------------
 
 

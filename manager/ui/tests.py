@@ -283,6 +283,39 @@ class WizardViewTests(TestCase):
         self.assertContains(response, "has an edit-conflict sibling")
         self.assertNotContains(response, "readme.txt")
 
+    def test_installation_default_deselects_matching_files_on_step_2(self):
+        from registry.models import InstallationSettings
+
+        settings_row = InstallationSettings.load()
+        settings_row.default_deselect_patterns = "d-*.gpkg"
+        settings_row.save()
+        response = self.client.get(reverse("add_project"), {"account": self.account.pk, "database": self.database.pk, "project": "ak/bonsta"})
+        self.assertContains(response, 'name="deselect_patterns" value="d-*.gpkg"')   # pre-filled from the setting
+        self.assertContains(response, '<span id="pick-count">1</span> of 2')
+        self.assertContains(response, 'value="1-punkter.gpkg" checked')
+        self.assertContains(response, 'value="d-foto.gpkg" \n')                     # unticked (no "checked")
+        self.assertNotContains(response, "bonsta_s_foto")                            # not in the names table either
+        # Empty setting: everything ticked, as before.
+        settings_row.default_deselect_patterns = ""
+        settings_row.save()
+        response = self.client.get(reverse("add_project"), {"account": self.account.pk, "database": self.database.pk, "project": "ak/bonsta"})
+        self.assertContains(response, '<span id="pick-count">2</span> of 2')
+
+    def test_settings_row_is_a_singleton(self):
+        from registry.models import InstallationSettings
+
+        first = InstallationSettings.load()
+        second = InstallationSettings(default_deselect_patterns="x")
+        second.save()
+        self.assertEqual(InstallationSettings.objects.count(), 1)
+        self.assertEqual(InstallationSettings.load().pk, first.pk)
+        self.assertEqual(InstallationSettings.load().default_deselect_patterns, "x")
+        admin_user = User.objects.create_superuser("root", password="pw")
+        self.client.login(username="root", password="pw")
+        self.assertEqual(self.client.get(reverse("admin:registry_installationsettings_add")).status_code, 403)
+        self.assertRedirects(self.client.get(reverse("admin:registry_installationsettings_changelist")),
+                             reverse("admin:registry_installationsettings_change", args=[1]))
+
     def test_names_partial_rederives_from_prefix(self):
         response = self.client.get(reverse("add_names"), {"prefix": "P3922 Test", "file": ["1-punkter.gpkg"]})
         self.assertContains(response, "p3922_test_s_punkter")

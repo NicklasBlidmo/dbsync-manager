@@ -577,10 +577,18 @@ def add_project(request):
     except Exception as exc:  # noqa: BLE001
         return render(request, "ui/add/error.html", {"message": f"cannot read project {project_path}: {exc}"})
     prefix = naming.default_prefix(project_path)
+    # Installation default: files matching the patterns start unticked
+    # (applied once here, so the reduced selection shows without JS).
+    from registry.models import InstallationSettings
+
+    pattern_text = InstallationSettings.load().default_deselect_patterns
+    patterns = naming.parse_patterns(pattern_text)
     selectable = [f for f in files if not f["conflict_copy"]]
+    for f in selectable:
+        f["checked"] = not naming.matches_any(f["path"], patterns)
     rows = [
         {"file": f["path"], "modified": m, "base": b}
-        for f in selectable
+        for f in selectable if f["checked"]
         for m, b in [naming.derive_schema_names(prefix, f["path"])]
     ]
     return render(request, "ui/add/project.html", {
@@ -591,6 +599,9 @@ def add_project(request):
         "version": mergin_api.version_number(info),
         "permission": mergin_api.permission(info),
         "files": files,
+        "selectable_count": len(selectable),
+        "checked_count": sum(1 for f in selectable if f["checked"]),
+        "deselect_patterns": pattern_text,
         "prefix": prefix,
         "rows": rows,
         "hooks": {kind: Hook.objects.filter(kind=kind) for kind in ("post_init", "pre_remove", "post_pull")},

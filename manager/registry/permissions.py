@@ -24,6 +24,7 @@ REGISTRY_MODELS = (
     "syncstatus",
     "event",
     "operation",
+    "installationsettings",
 )
 
 OPERATOR_WRITE = {

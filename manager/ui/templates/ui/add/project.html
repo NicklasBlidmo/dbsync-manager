@@ -14,11 +14,18 @@
   <input type="hidden" name="project" value="{{ project }}">
   <input type="hidden" name="project_id" value="{{ project_id }}">
 
-  <h2 class="section-title">GeoPackages to sync</h2>
+  <h2 class="section-title">GeoPackages to sync <span class="muted">(<span id="pick-count">{{ checked_count }}</span> of {{ selectable_count }})</span></h2>
   <div class="panel">
+  <div class="actions" id="pick-tools">
+    <button type="button" data-pick="all">Select all</button>
+    <button type="button" data-pick="none">Select none</button>
+    <label class="muted">Deselect matching
+      <input name="deselect_patterns" value="{{ deselect_patterns }}" placeholder="e.g. m-*.gpkg, d-*.gpkg" title="comma-separated file-name patterns with * and ?, case-insensitive"></label>
+    <button type="button" data-pick="apply">Apply</button>
+  </div>
   {% for f in files %}
     <label class="block">
-      <input type="checkbox" name="pick" value="{{ f.path }}" {% if not f.conflict_copy %}checked{% else %}disabled{% endif %}
+      <input type="checkbox" name="pick" value="{{ f.path }}" {% if f.conflict_copy %}disabled{% elif f.checked %}checked{% endif %}
              hx-get="{% url 'add_names' %}" hx-target="#names" hx-include="#add" hx-trigger="change">
       {{ f.path }} <span class="muted">{% if f.size %}({{ f.size|filesizeformat }}){% endif %}</span>
       {% if f.conflict_copy %}<span class="badge bad">edit-conflict copy, cannot sync</span>{% endif %}
@@ -56,4 +63,47 @@
 
   <p><button type="submit">Preview</button> <a class="button" href="{% url 'add_start' %}">Back</a></p>
 </form>
+<script>
+(function () {
+  // Select all / none / deselect matching. Patterns are fnmatch-style with
+  // * and ? only, matched case-insensitively against the file name; the
+  // server applies the installation default the same way on first render.
+  var form = document.getElementById("add");
+  var count = document.getElementById("pick-count");
+  function boxes() {
+    return Array.prototype.filter.call(form.querySelectorAll('input[name="pick"]'), function (b) { return !b.disabled; });
+  }
+  function globToRegExp(glob) {
+    var re = glob.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".");
+    return new RegExp("^" + re + "$", "i");
+  }
+  function baseName(path) { return path.slice(path.lastIndexOf("/") + 1); }
+  function refresh() {
+    var all = boxes();
+    count.textContent = all.filter(function (b) { return b.checked; }).length;
+    if (all.length) all[0].dispatchEvent(new Event("change", { bubbles: true }));  // re-derive the names table
+  }
+  document.getElementById("pick-tools").addEventListener("click", function (event) {
+    var button = event.target.closest("button[data-pick]");
+    if (!button) return;
+    var mode = button.dataset.pick;
+    if (mode === "apply") {
+      var patterns = form.querySelector('input[name="deselect_patterns"]').value
+        .split(",").map(function (p) { return p.trim(); }).filter(Boolean).map(globToRegExp);
+      boxes().forEach(function (b) {
+        if (patterns.some(function (re) { return re.test(baseName(b.value)); })) b.checked = false;
+      });
+    } else {
+      boxes().forEach(function (b) { b.checked = (mode === "all"); });
+    }
+    refresh();
+  });
+  form.addEventListener("change", function (event) {
+    if (event.target.name === "pick") count.textContent = boxes().filter(function (b) { return b.checked; }).length;
+  });
+  form.querySelector('input[name="deselect_patterns"]').addEventListener("keydown", function (event) {
+    if (event.key === "Enter") { event.preventDefault(); document.querySelector('button[data-pick="apply"]').click(); }
+  });
+})();
+</script>
 {% endblock %}

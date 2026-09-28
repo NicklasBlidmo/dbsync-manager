@@ -70,6 +70,15 @@ docker compose run --rm --no-deps --entrypoint python manager generate_keys.py
 Copy `DBSYNC_MANAGER_SECRET_KEY` somewhere safe outside the server. Once a
 credential has been saved it cannot be replaced (design §10).
 
+### First-time setup
+
+Under Settings (admin) → Registry: a Mergin account, a database, and, if
+wanted, the installation settings row ("Settings (installation)"). Its
+*default deselect patterns* pre-fill the add wizard: comma-separated
+file-name globs such as `m-*.gpkg, d-*.gpkg` whose matching GeoPackages
+start unticked in step 2. The tool itself has no opinion about file
+naming; leave it empty and everything starts ticked.
+
 ### When it does not start
 
 The container runs a preflight before `migrate` and prints one line per

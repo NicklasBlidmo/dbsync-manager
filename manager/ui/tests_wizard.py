@@ -38,6 +38,15 @@ class NamingTests(SimpleTestCase):
         self.assertEqual(len(modified), 63)
         self.assertEqual(len(base), 63)
 
+    def test_deselect_patterns(self):
+        self.assertEqual(naming.parse_patterns(" m-*.gpkg, d-*.gpkg ,, "), ["m-*.gpkg", "d-*.gpkg"])
+        self.assertEqual(naming.parse_patterns(""), [])
+        patterns = ["m-*.gpkg", "d-?oto.gpkg"]
+        self.assertTrue(naming.matches_any("M-Huvudtyp.GPKG", patterns))        # case-insensitive
+        self.assertTrue(naming.matches_any("sub/d-foto.gpkg", patterns))        # file name, not the directory
+        self.assertFalse(naming.matches_any("1-punkter.gpkg", patterns))
+        self.assertFalse(naming.matches_any("1-punkter.gpkg", []))
+
     def test_conflict_copies(self):
         self.assertTrue(naming.is_conflict_copy("1-punkter (edit conflict, anna v3).gpkg"))
         self.assertFalse(naming.is_conflict_copy("1-punkter.gpkg"))

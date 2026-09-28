@@ -57,6 +57,23 @@ def derive_schema_names(prefix: str, sync_file: str) -> tuple[str, str]:
     return modified, base
 
 
+def parse_patterns(text: str) -> list:
+    """'m-*.gpkg, d-*.gpkg' -> ['m-*.gpkg', 'd-*.gpkg']."""
+    return [p.strip() for p in (text or "").split(",") if p.strip()]
+
+
+def matches_any(path: str, patterns) -> bool:
+    """fnmatch of the file name (not the directory) against any pattern, case-insensitively.
+
+    Mirrors the client-side helper in add/project.html: only * and ? are
+    supported there, so patterns should stick to those.
+    """
+    import fnmatch
+
+    name = PurePosixPath(path).name.lower()
+    return any(fnmatch.fnmatchcase(name, p.lower()) for p in patterns)
+
+
 def is_conflict_copy(path: str) -> bool:
     """Mergin writes edit conflicts as '<name> (edit conflict, <user> v<N>).gpkg'."""
     return "(edit conflict" in PurePosixPath(path).name
