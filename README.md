@@ -7,38 +7,29 @@ projects and PostGIS, packaged as one Docker container.
 The design is in [docs/dbsync-manager-design.md](docs/dbsync-manager-design.md).
 Section numbers in code comments (§6, §8, ...) refer to it.
 
-## Status
+## Version
 
-Slice 7 of 7 (design §14). The supervisor renders db-sync's config from the
-registry, starts one daemon per project with `desired_state = running`,
-stops it on `paused`, restarts it with backoff after a crash, re-attaches to
-daemons left running by a previous supervisor, and every `DBSYNC_CHECK_INTERVAL`
-runs the consistency check: server, checkout and database versions, row
-counts GeoPackage vs base vs modified, Mergin permission and database
-writers, from which it derives `health` and the alert conditions (design §6).
-The web UI at `/` shows every project with its three badges (desired,
-process, health) and a project page with status per GeoPackage, direction
-facts, live log tail, events and pause/resume. "Add sync" is a wizard:
-pick account and database, search a Mergin workspace, tick the project's
-GeoPackages, get schema names derived from a prefix (editable), and a
-preview that checks the target database (new schemas, adoption of an
-existing hand-run sync, or a conflict) and the resulting direction before
-anything is created. The admin form remains for edge cases.
-Hooks (design §8) run inside the container with PG* variables and a per-run
-pgpass file: `post_init` gates `running`, `post_pull` runs after the check
-when the database version advanced, and any configured hook can be run
-from the project page. Alert conditions send one e-mail when they become
-active and one when they resolve, to the project's recipients.
-Remove and re-init are restart-safe operations (design §6): the daemon is
-stopped, the `pre_remove` hook runs before anything destructive, schemas
-are dropped only when asked (remove) or always (re-init), and every step
-is logged on the project page with retry and, before the drop, cancel.
-The daemon's log is followed and classified into pull/push runs and events
-(a pull counts as applied only when the check sees the database at that
-version; geodiff NOTICE lines are info, repeated errors are counted), and
-events and runs older than `DBSYNC_RETENTION_DAYS` are pruned daily.
-All seven slices of v1 are in; remaining: field test of the log history,
-then the Bönsta takeover (design §15).
+v1.0.0, first release. Design §14's ten slices are complete, and the tool
+has run in production at the author's organisation since 2026-09-25,
+where it took over a hand-run sync without re-initialisation (design §15
+describes that adoption as a worked example).
+
+What v1 does: it runs one db-sync daemon per Mergin Maps project from a
+registry in PostgreSQL, restarts it with backoff and re-attaches after its
+own restarts. Every few minutes it compares the Mergin server version, the
+checkout and the database, and the row counts of GeoPackage, base and
+modified schemas, and derives a health state and alert conditions that go
+out by e-mail once when they start and once when they end. A web UI shows
+every project with desired, process and health badges, a project page
+with per-file state, live log, pull history, events and hooks, and an add
+wizard that derives schema names, checks the target database and adopts
+existing schemas. Hooks run organisation-specific SQL and scripts around
+init, pull and removal with a per-run pgpass file and masked output.
+Remove and re-init are restart-safe multi-step operations with retry and
+cancel.
+
+Out of scope: syncing forms or metadata (part 2 of the project), editing
+data, and multi-tenant use; one installation per organisation.
 
 ## Quick start
 
@@ -54,10 +45,15 @@ docker compose exec manager python manage.py createsuperuser
 ```
 
 Open `http://<ALLOWED_HOSTS entry>:<HTTP_PORT>/` and log in with the account
-you just created; there are no default credentials. Add a Mergin account and
-a database under Settings (admin) → Registry before adding a project. Users
-in the `viewer` group see everything; `operator` can pause and resume;
-`admin` manages credentials and users. Staff users get the admin link.
+you just created; there are no default credentials. The groups `viewer`,
+`operator` and `admin` are created at start (log line "groups ensured"):
+`viewer` sees everything, `operator` can add, pause, resume, re-init and
+remove syncs, `admin` manages credentials and users; staff users get the
+admin link. Before the first project, add under Settings (admin) →
+Registry a Mergin account that has at least Reader on the project, and a
+database row whose role owns the sync schemas or may create them
+(`GRANT CREATE ON DATABASE <db> TO <role>`); the sync runs as that role,
+never as the registry role.
 
 No Python on the host? Generate the keys with the image instead, bypassing
 its entrypoint (which would run migrate first), and paste the two values
@@ -99,6 +95,18 @@ PostGIS server and point `DATABASE_URL` at it; from inside the container
 that is the server's LAN address or a shared Docker network, never
 `localhost`.
 
+With the bundled PostGIS, `docker/postgis-init/10-manager.sh` runs once
+when the data volume is created and makes the registry role
+`dbsync_manager` (password `MANAGER_DB_PASSWORD` from `.env`) owning the
+schema `dbsync_manager`, so the registry never runs as the `postgres`
+superuser; `.env.example`'s `DATABASE_URL` already points at that role.
+Sync roles for projects are created the same way by hand:
+
+```sh
+docker compose exec postgis psql -U postgres -d gis -c \
+  "CREATE ROLE dbsync LOGIN PASSWORD '...'; GRANT CREATE ON DATABASE gis TO dbsync;"
+```
+
 The role in `DATABASE_URL` owns the `dbsync_manager` schema and nothing
 else; it is not the role syncs run as. Either give it `CREATE` on the
 database, or pre-create the schema and grant nothing more:
@@ -121,12 +129,13 @@ image are bind-mounted read-only through a server-local
 services:
   manager:
     volumes:
-      - /opt/ak-db:/opt/ak-db:ro
+      - /opt/sync-scripts:/opt/sync-scripts:ro
 ```
 
-A hook command then reads them, e.g. `SQLDIR=/opt/ak-db/sql
-/opt/ak-db/run_sql.sh "$DBSYNC_SCHEMA_PREFIX" all`. `psql` and `ogr2ogr`
-are in the image. A hook that needs more privileges than the sync role
+A hook command then reads them, e.g. `SQLDIR=/opt/sync-scripts/sql
+/opt/sync-scripts/run_sql.sh "$DBSYNC_SCHEMA_PREFIX" all`, where the
+scripts are the organisation's own; the manager only provides the
+environment (design §8). `psql` and `ogr2ogr` are in the image. A hook that needs more privileges than the sync role
 (views, grants, `pg_dump`) gets its own "run as" database connection in
 the admin; `DBSYNC_SYNC_ROLE` tells the script which role to grant to.
 
@@ -154,8 +163,8 @@ manager/              Django project
   ui/                 HTMX pages (§9): projects, project page, add wizard, login
   ui/static/ui/app.css  the stylesheet; its :root tokens are the visual contract
 patches/              applied to db-sync at image build (#163)
-tools/                check_sync.sh, standalone cron check without the manager
-docs/                 design document
+tools/                backup.sh, the nightly dump (docs/backup.md)
+docs/                 design document, backup and e-mail guides, review notes
 ```
 
 ## Development
@@ -171,8 +180,10 @@ python manage.py test --exclude-tag=db   # unit tests, no database needed
 python manage.py migrate && python manage.py runserver
 ```
 
-Database-backed tests (tagged `db`) run against a throwaway PostGIS with a
-non-superuser role, on a machine with Docker:
+Database-backed tests (tagged `db`) need Docker: they run against a
+throwaway PostGIS with a non-superuser role, so that permission bugs show
+(see CLAUDE.md for the invariants they guard, including the Windows note
+about `sqlite3` handles):
 
 ```sh
 docker compose --profile test run --rm test
@@ -188,3 +199,17 @@ docker compose --profile test run --rm test
 /data/projects/<id>/tmp/               TMPDIR of the daemon and hooks, emptied on start
 /data/projects/<id>/work/<project>/<modified schema>/   the checkout (#163 patch)
 ```
+
+## Project history
+
+`docs/review-notes/` is the field log of the first installation
+(Arkeologikonsult, Sweden, September 2026): what broke, why, and what was
+changed. It refers to that organisation's servers and projects. It is kept
+because `CLAUDE.md` and several design decisions point at it; nothing in
+it is required to run the software. `CHANGELOG.md` lists releases.
+
+## License
+
+MIT, see `LICENSE`. The image builds on Lutra Consulting's db-sync (MIT);
+the Inter font is shipped unchanged under the SIL Open Font License
+(`manager/ui/static/ui/fonts/OFL.txt`).

@@ -22,8 +22,8 @@ it that matter are copied into the repo:
   (project page light, state check light, project page dark). The "before"
   screenshots of the real pages are in the same folder.
 
-The full hand-off, including the HTML mock, is outside the repo at
-`C:\ClaudeCowork\Arkeologikonsult Dokumentationssytem\GUI\dbsync-manager visual pass\design_handoff_dbsync_visual_pass\`.
+The full hand-off, including the HTML mock, is outside the repo in
+the private documentation folder (`GUI/dbsync-manager visual pass/`).
 Open `mock/dbsync-manager Visual Pass.dc.html` in a browser to see light
 and dark side by side. The mock is a reference, not code to copy.
 

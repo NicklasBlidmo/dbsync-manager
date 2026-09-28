@@ -80,13 +80,17 @@ manager re-download the checkout (delete the project's work dir; db-sync
 downloads the version in the base schema comment on the next start).
 Design §10 "State, backup and recovery" describes choosing the source.
 
-## Arkeologikonsult values
+## Installation worksheet
 
-Filled in for the first installation; other installations replace them.
+Fill in for your installation and keep it with the organisation's own
+documentation, not in this repository.
 
 | Item | Value |
 |---|---|
-| Database | `ak` in container `ak-postgis` on gis-ubuntu |
-| Dump target | the archive share used by the `pre_remove` hook |
-| Key store | the company password manager, entry "dbsync-manager Fernet key" |
-| Before cleaning any hand-run sync | `pg_dump -n 'p3922_bonsta*'`, since `kontext_grupp` and `sektion_kontext` may hold hand-made corrections |
+| Database (name, server or container) | |
+| Dump target (directory or share) | |
+| Retention (days) | |
+| Cron user and schedule | |
+| Key store for `DBSYNC_MANAGER_SECRET_KEY` | |
+| Restore test done (date, by whom) | |
+| Schemas that hold hand-made corrections and need a separate dump before any cleanup | |

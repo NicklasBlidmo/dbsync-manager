@@ -3,7 +3,7 @@
 Reviewer: Claude (Cowork session with Nicklas), reading commit `fec4366`
 with one question in mind: what happens when slice 1 is installed on a
 server that already runs PostGIS and a live db-sync (Arkeologikonsult's
-`/opt/ak-db` on 192.168.145.7, database `ak`, PostgreSQL 16)?
+`/opt/ak-db` on 192.0.2.10, database `ak`, PostgreSQL 16)?
 
 The changes below were left **uncommitted in the working tree** for review.
 Nothing was committed or pushed. The Docker build is still unverified;

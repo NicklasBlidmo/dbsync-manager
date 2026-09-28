@@ -176,14 +176,16 @@ Microsoft Graph with application permissions (`Mail.Send`). More setup
 (app registration, client secret, a client library) but independent of IP
 addresses and firewall rules. Considered, not built.
 
-## Arkeologikonsult values
+## Installation worksheet
 
-Filled in for the first installation; other installations replace them.
+Fill in for your tenant and server and keep it with the organisation's own
+documentation, not in this repository.
 
 | Item | Value |
 |---|---|
-| MX host | `arkeologikonsult-se.mail.protection.outlook.com` |
-| Sending domain | `arkeologikonsult.se` (SPF and DKIM in place) |
-| Connector | Exchange admin → Mail flow → Connectors → "Internal app servers", trusts the office public IP (2026-05-26) |
-| Firewall | pfSense LAN rule "SMTP egress whitelist": only `192.168.145.7` (gis-ubuntu) may send TCP/25 out. A new server on another LAN address must be added there |
-| From addresses in use | `application-manager@…` (application-manager); `dbsync-manager@…` proposed for the manager; `noreply@…` for cron |
+| MX host (`dig MX <your-domain>`) | |
+| Sending domain (SPF includes Microsoft, DKIM enabled) | |
+| Inbound connector name and the public IP it trusts (date) | |
+| Firewall rule allowing outbound TCP/25 from the server only | |
+| From address per system (manager, cron, other apps) | |
+| Test message sent to an external mailbox with `DKIM: PASS` (date) | |

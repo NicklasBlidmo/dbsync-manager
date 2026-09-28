@@ -1,7 +1,7 @@
 # First installation on the production server, 2026-09-21 (evening)
 
 Reviewer: Claude (Cowork session with Nicklas). Commit `59a8e4f` was built and
-started on `gis-ubuntu` (192.168.145.7), against the existing PostGIS
+started on `gis-ubuntu` (192.0.2.10), against the existing PostGIS
 container `ak-postgis`, database `ak`. It took seven attempts. None of the
 failures was in the data model or the supervisor; all were in the first ten
 minutes of an installation, which is where a tool meant to be shared with
@@ -18,7 +18,7 @@ container. Nicklas verifies those on the server; see "Upgrading the server".
 ## What now runs in production
 
 - `/opt/dbsync-manager`, image built from `59a8e4f`, UI on
-  `http://192.168.145.7:8090/` (office LAN only, plain HTTP).
+  `http://192.0.2.10:8090/` (office LAN only, plain HTTP).
 - Registry in database `ak`, schema `dbsync_manager`, owned by role
   `ak_manager`, which has nothing else: the schema was pre-created with
   `CREATE SCHEMA ... AUTHORIZATION`, no `CREATE` on the database. 19 tables
@@ -108,7 +108,7 @@ missing role, schema missing without `CREATE`, and the success case.
 
 ### 5. Healthcheck was refused by `ALLOWED_HOSTS`
 
-`.env` had `ALLOWED_HOSTS=192.168.145.7` (my instruction, which dropped the
+`.env` had `ALLOWED_HOSTS=192.0.2.10` (my instruction, which dropped the
 template's loopback entries). The healthcheck calls
 `http://127.0.0.1:8080/healthz`, got HTTP 400, and the container would have
 been marked unhealthy while working.
@@ -154,12 +154,12 @@ logged out once by the upgrade.
 cd /opt/dbsync-manager && git pull
 # move the override into .env, then remove it
 cat >> .env <<'EOT'
-BIND_IP=192.168.145.7
+BIND_IP=192.0.2.10
 HTTP_PORT=8090
 TZ=Europe/Stockholm
 EOT
 rm docker-compose.override.yml
-docker compose config | grep -A4 'ports:'     # expect host_ip 192.168.145.7, published "8090"
+docker compose config | grep -A4 'ports:'     # expect host_ip 192.0.2.10, published "8090"
 docker compose build && docker compose up -d && docker compose logs -f --tail 30 manager
 ```
 

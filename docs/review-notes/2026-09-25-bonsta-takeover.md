@@ -52,7 +52,7 @@ exist. Skip connections without a checkout while `initializing`.
 
 - Manager: project 4 `Arkeologikonsult/3922_Bönsta`, database `gis-ubuntu`
   (`ak_dbsync`), account Nicklas-Privat (Reader), sleep 60, no hooks yet,
-  alerts to nicklas.blidmo@arkeologikonsult.se. `p3922_test` removed
+  alerts to <operator address>. `p3922_test` removed
   (registry row kept); the clone still exists in Mergin, to be deleted.
 - POC: `ak-dbsync` stopped, not removed; `/opt/ak-db/dbsync/` and
   `work/3922_Bönsta` kept for one week as the way back (pause in the

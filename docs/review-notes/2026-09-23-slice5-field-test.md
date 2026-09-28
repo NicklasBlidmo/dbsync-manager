@@ -19,9 +19,9 @@ real init (needs a new project or slice 6 re-init).
 
 ## E-mail (Microsoft 365 direct send, `docs/m365-direct-send.md`)
 
-`SMTP_HOST=arkeologikonsult-se.mail.protection.outlook.com`, port 25,
-STARTTLS, no credentials, `SMTP_FROM=dbsync-manager@arkeologikonsult.se`,
-`DBSYNC_BASE_URL=http://192.168.145.7:8090`. `manage.py sendtestemail`
+`SMTP_HOST=<mx-prefix>.mail.protection.outlook.com`, port 25,
+STARTTLS, no credentials, `SMTP_FROM=dbsync-manager@<your-domain>`,
+`DBSYNC_BASE_URL=http://192.0.2.10:8090`. `manage.py sendtestemail`
 delivered. Then the `db_behind` provocation from 2026-09-22 (base-table
 trigger, one point with `Beskrivning = 'db_behind'`): one mail when the
 condition activated after two check intervals, one on `resolved` after

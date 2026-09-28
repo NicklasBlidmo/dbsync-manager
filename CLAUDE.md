@@ -4,7 +4,7 @@ Read first: `docs/dbsync-manager-design.md` (§ numbers in code comments refer
 to it) and the newest file in `docs/review-notes/`. Review notes record
 changes made outside a coding session and, more importantly, *why*; read them
 before touching the files they list, and do not revert those changes without
-raising it with Nicklas.
+raising it with the maintainer.
 
 Invariants learned the hard way:
 
