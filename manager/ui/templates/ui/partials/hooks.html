@@ -1,6 +1,6 @@
 {% load ui_extras %}
 {% if hooks %}
-<p class="actions">
+<div class="actions">
   {% for kind, hook in hooks %}
     <span class="badge muted" title="runs as {% if hook.database %}{{ hook.database.user }} ({{ hook.database.name }}){% else %}the sync role{% endif %}">{{ kind }}: {{ hook.name }}</span>
     {% if can_operate %}
@@ -8,7 +8,7 @@
       <input type="hidden" name="kind" value="{{ kind }}"><button type="submit">Run {{ kind }} now</button></form>
     {% endif %}
   {% endfor %}
-</p>
+</div>
 {% else %}
 <p class="muted">No hooks configured for this project (set them in the admin or when adding the sync).</p>
 {% endif %}

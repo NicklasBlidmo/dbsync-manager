@@ -1,7 +1,7 @@
 {% load ui_extras %}
 {% if operation %}
 <div class="panel">
-  <p class="status-bar">
+  <div class="status-bar">
     <strong>{{ operation.kind }}</strong> operation {{ operation.pk }}
     <span class="badge {% if operation.status == 'done' %}ok{% elif operation.status == 'failed' %}bad{% elif operation.status == 'cancelled' %}muted{% else %}info{% endif %}">{{ operation.status }}</span>
     <span class="muted">requested {{ operation.requested_at|date:"Y-m-d H:i" }}{% if operation.requested_by %} by {{ operation.requested_by.get_username }}{% endif %}
@@ -15,7 +15,7 @@
     {% elif can_operate and operation.is_open and cancellable %}
     <span class="actions"><form class="inline" method="post" action="{% url 'operation_cancel' operation.pk %}">{% csrf_token %}<button type="submit">Cancel</button></form></span>
     {% endif %}
-  </p>
+  </div>
   {% if operation.error %}<div class="notice bad">{{ operation.error }}</div>{% endif %}
   <table class="table">
     <thead><tr><th>#</th><th>Step</th><th>Started</th><th>Result</th><th>Detail</th></tr></thead>
