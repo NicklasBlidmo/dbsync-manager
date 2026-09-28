@@ -147,3 +147,48 @@ change to the supervisor, part 2 of the project.
 | C12 | Port check before the build in the README and in `setup.sh` (suggests the next free port) |
 | D | `tools/setup.sh`: POSIX sh, checks (Linux, docker, compose ≥ 2.20, port free), asks with defaults or takes `SETUP_*`, writes `.env` (password twice, chmod 600, never overwrites a filled value), keys via python3 or the image with a pause to store the Fernet key, build, up, health wait with preflight lines, createsuperuser (prompt, `DJANGO_SUPERUSER_*`, or skipped without a terminal), summary with the Database row. **Unverified: no Docker or Linux on the development machine; `sh -n` only** |
 | E | For gis-ubuntu: the clean-room walk with `setup.sh` and the README only |
+
+## Clean-room walk, updated for this slice (replaces slice 11 brief §D)
+
+On gis-ubuntu, next to the production instance, from a fresh clone. The
+project name goes into `.env` as `COMPOSE_PROJECT_NAME`, so no `-p` on
+later commands run from that directory. Answer nothing the README does
+not say; every step that needs more is a README bug for the review note.
+
+```sh
+git clone <repo> /tmp/dbsync-fresh && cd /tmp/dbsync-fresh
+SETUP_PROFILE=postgis SETUP_PROJECT_NAME=dbsync-fresh SETUP_HTTP_PORT=8091   SETUP_ALLOWED_HOSTS=192.0.2.10 sh tools/setup.sh
+#   -> asks nothing else, prints DBSYNC_MANAGER_SECRET_KEY and pauses, builds,
+#      starts, waits for /healthz, runs createsuperuser, prints the Database row
+docker compose logs manager | grep -E 'preflight|Applying|groups ensured|tick'
+docker compose logs postgis | grep -E 'created (role|sync role)|CREATE EXTENSION|ERROR'
+docker compose exec postgis psql -U postgres -d gis -c '\dx' -c '\du'
+#   -> postgis listed; roles dbsync_manager and dbsync_sync
+```
+
+In the browser on port 8091, README only:
+
+1. Settings → Databases → add the row from the README table (host
+   `postgis`, user `dbsync_sync`, password `SYNC_DB_PASSWORD` from `.env`),
+   select it, action **Test connection**: "ok, PostgreSQL 16.x, PostGIS
+   3.4.x, 0 schemas besides the system ones".
+2. Settings → Mergin accounts → the service account.
+3. Add sync → `Arkeologikonsult/3448_brasan9` (18 files): tick and untick
+   a file and change the prefix, the names table follows each time
+   (bug 1). Preview → Create → `running` and `ok` within a few minutes.
+4. Pause, resume, then Remove with drop; the operation panel shows every
+   step.
+5. Two instances: log in to production (8090) and this instance (8091) in
+   the same browser; neither logs the other out (bug 3).
+6. Failed request notice (bug 4): in the wizard's step 2 open the browser's
+   developer tools, set the network to offline, tick a file: the red
+   notice appears at the top of the page; go online, Dismiss.
+
+Tear down:
+
+```sh
+docker compose down -v && cd / && rm -rf /tmp/dbsync-fresh
+```
+
+If the first start fails and is retried, `docker compose down -v` first:
+the init script runs only on an empty volume.
