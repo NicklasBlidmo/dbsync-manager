@@ -31,7 +31,7 @@ def version(value):
 @register.filter
 def isotime(value, fmt="H:i:s"):
     """An ISO timestamp string (as stored in JSON logs) in the page's time zone."""
-    from datetime import datetime
+    from datetime import datetime, timezone as dt_timezone
 
     from django.utils import dateformat, timezone
 
@@ -42,7 +42,7 @@ def isotime(value, fmt="H:i:s"):
     except ValueError:
         return str(value)
     if timezone.is_naive(parsed):
-        parsed = timezone.make_aware(parsed, timezone.utc)
+        parsed = timezone.make_aware(parsed, dt_timezone.utc)
     return dateformat.format(timezone.localtime(parsed), fmt)
 
 
@@ -50,7 +50,7 @@ def isotime(value, fmt="H:i:s"):
 def ago(value):
     """Relative time for a recent moment: '59 s ago', '3 min ago', '2 h ago',
     else the local date and time. Empty for None."""
-    from datetime import datetime
+    from datetime import datetime, timezone as dt_timezone
 
     from django.utils import dateformat, timezone
 
@@ -62,7 +62,7 @@ def ago(value):
         except ValueError:
             return value
     if timezone.is_naive(value):
-        value = timezone.make_aware(value, timezone.utc)
+        value = timezone.make_aware(value, dt_timezone.utc)
     seconds = (timezone.now() - value).total_seconds()
     if seconds < 0:
         seconds = 0

@@ -5,12 +5,12 @@ Pull history grouping and the relative-time filter (slice 10 brief). Pure.
 from datetime import datetime, timedelta, timezone as tz
 from unittest import mock
 
-from django.test import SimpleTestCase
+from django.test import SimpleTestCase, override_settings
 
 from registry.models import SyncRun
 
 from .runs import group_runs
-from .templatetags.ui_extras import ago
+from .templatetags.ui_extras import ago, isotime
 
 T0 = datetime(2026, 9, 28, 11, 16, 0, tzinfo=tz.utc)
 
@@ -60,6 +60,7 @@ class GroupRunsTests(SimpleTestCase):
         self.assertEqual(len(group_runs(runs, window_seconds=5, total_connections=1, limit=20)), 20)
 
 
+@override_settings(TIME_ZONE="UTC")   # the container may run with TZ from .env; these assert UTC
 class AgoFilterTests(SimpleTestCase):
     def test_boundaries(self):
         now = datetime(2026, 9, 28, 12, 0, 0, tzinfo=tz.utc)
@@ -71,3 +72,13 @@ class AgoFilterTests(SimpleTestCase):
             self.assertEqual(ago(now - timedelta(hours=25)), "2026-09-27 11:00")   # UTC == local in tests
             self.assertEqual(ago(None), "")
             self.assertEqual(ago((now - timedelta(minutes=3)).isoformat()), "3 min ago")   # ISO strings too
+            # Naive strings (db-sync's log lines, UTC) went through django's
+            # timezone.utc, removed in Django 5.0: a 500 on every project page
+            # in the field (2026-09-28); the Windows run never hit it.
+            self.assertEqual(ago("2026-09-28T11:57:00"), "3 min ago")
+
+    def test_isotime_accepts_naive_and_aware_strings(self):
+        self.assertEqual(isotime("2026-09-28T11:57:03"), "11:57:03")
+        self.assertEqual(isotime("2026-09-28T11:57:03+00:00"), "11:57:03")
+        self.assertEqual(isotime("not a time"), "not a time")
+        self.assertEqual(isotime(""), "")
