@@ -66,6 +66,13 @@ Invariants learned the hard way:
   gets its own `TMPDIR` under its project directory, and starts in one tick
   are staggered. A restart loop that keeps two daemons in step never
   resolves on its own.
+- In the add wizard the submitted `files` list is the only source of truth
+  for which GeoPackages a project gets. The names table, Preview and Create
+  all derive from it; an empty list is an empty list (form error), never
+  "unchanged" or "all". Client-side helpers that toggle checkboxes must
+  dispatch `change` so the HTMX partial follows (2026-09-28: Select none
+  left every schema name in place and Preview created connections for
+  unchecked files).
 
 Working agreements:
 

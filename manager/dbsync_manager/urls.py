@@ -19,4 +19,4 @@ urlpatterns = [
 
 admin.site.site_header = "dbsync-manager"
 admin.site.site_title = "dbsync-manager"
-admin.site.index_title = "Registry"
+admin.site.index_title = "Settings"

@@ -60,6 +60,9 @@ ALLOWED_HOSTS = list(dict.fromkeys(env_list("ALLOWED_HOSTS") + ["localhost", "12
 CSRF_TRUSTED_ORIGINS = env_list("CSRF_TRUSTED_ORIGINS")
 
 INSTALLED_APPS = [
+    # ui first: its templates/admin/base_site.html must be found before
+    # Django's own (app template dirs are searched in this order).
+    "ui.apps.UiConfig",
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
@@ -69,7 +72,6 @@ INSTALLED_APPS = [
     "django.contrib.postgres",
     "registry.apps.RegistryConfig",
     "supervisor.apps.SupervisorConfig",
-    "ui.apps.UiConfig",
 ]
 
 MIDDLEWARE = [

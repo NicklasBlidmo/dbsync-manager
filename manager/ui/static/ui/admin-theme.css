@@ -1,0 +1,101 @@
+/* Django admin in the manager's look.
+ *
+ * Redefines Django's admin CSS variables (contrib/admin/static/admin/css/
+ * base.css and dark_mode.css) from the tokens in app.css, which
+ * admin/base_site.html links before this file; app.css is the canonical
+ * home of every token, nothing is duplicated here. No admin page is
+ * replaced; only the variables and three small rules change. */
+
+:root, html[data-theme="light"] {
+  --primary: var(--brand);
+  --secondary: color-mix(in srgb, var(--brand) 80%, #000);
+  --accent: var(--brand-fill);
+  --primary-fg: var(--bg);
+
+  --body-fg: var(--fg);
+  --body-bg: var(--bg);
+  --body-quiet-color: var(--muted);
+  --body-medium-color: var(--muted);
+  --body-loud-color: var(--fg);
+
+  --header-color: var(--bg);
+  --header-branding-color: var(--brand-fill);
+  --header-bg: var(--brand);
+  --header-link-color: var(--bg);
+
+  --breadcrumbs-fg: var(--bg);
+  --breadcrumbs-bg: var(--secondary);
+  --breadcrumbs-link-fg: var(--bg);
+
+  --link-fg: var(--info);
+  --link-hover-color: var(--brand);
+  --link-selected-fg: var(--brand);
+
+  --hairline-color: var(--line);
+  --border-color: var(--line);
+  --error-fg: var(--bad);
+
+  --message-success-bg: var(--ok-bg);
+  --message-warning-bg: var(--warn-bg);
+  --message-error-bg: var(--bad-bg);
+
+  --darkened-bg: var(--panel);
+  --selected-bg: color-mix(in srgb, var(--bg) 60%, var(--panel));
+  --selected-row: var(--info-bg);
+
+  --button-fg: var(--brand-on-fill);
+  --button-bg: var(--brand-fill);
+  --button-hover-bg: color-mix(in srgb, var(--brand-fill) 88%, #000);
+  --default-button-bg: var(--brand);
+  --default-button-hover-bg: var(--secondary);
+  --close-button-bg: var(--muted);
+  --close-button-hover-bg: var(--fg);
+  --delete-button-bg: var(--bad);
+  --delete-button-hover-bg: color-mix(in srgb, var(--bad) 80%, #000);
+
+  --object-tools-fg: var(--bg);
+  --object-tools-bg: var(--brand);
+  --object-tools-hover-bg: var(--secondary);
+
+  --font-family-primary: var(--font-body);
+  --font-family-monospace: var(--font-mono);
+}
+
+/* Dark: the brand token is pale green there, so header and default
+   buttons carry dark text (brand-on-fill) instead of the page background. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --primary-fg: var(--brand-on-fill);
+    --header-color: var(--brand-on-fill);
+    --header-link-color: var(--brand-on-fill);
+    --header-branding-color: var(--brand-on-fill);
+    --breadcrumbs-fg: var(--fg);
+    --breadcrumbs-bg: var(--panel);
+    --breadcrumbs-link-fg: var(--brand);
+    --object-tools-fg: var(--brand-on-fill);
+    --secondary: color-mix(in srgb, var(--brand) 80%, #000);
+  }
+}
+html[data-theme="dark"] {
+  --primary-fg: var(--brand-on-fill);
+  --header-color: var(--brand-on-fill);
+  --header-link-color: var(--brand-on-fill);
+  --header-branding-color: var(--brand-on-fill);
+  --breadcrumbs-fg: var(--fg);
+  --breadcrumbs-bg: var(--panel);
+  --breadcrumbs-link-fg: var(--brand);
+  --object-tools-fg: var(--brand-on-fill);
+  --secondary: color-mix(in srgb, var(--brand) 80%, #000);
+}
+
+/* The default (submit) button is forest on forest with --button-fg; give it
+   the header's text colour instead. */
+.button.default, input[type="submit"].default, .submit-row input.default {
+  color: var(--primary-fg);
+}
+.button.default:hover, input[type="submit"].default:hover, .submit-row input.default:hover {
+  color: var(--primary-fg);
+}
+
+/* The link back to the manager in the header's user tools */
+#user-tools a.back-to-manager { margin-right: .75em; }

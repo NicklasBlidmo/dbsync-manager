@@ -1,0 +1,11 @@
+{% extends "admin/base_site.html" %}
+{% load static %}
+{# The manager's look for the Django admin: app.css supplies the tokens,
+   admin-theme.css maps them onto Django's admin variables. Found before
+   Django's own copy because the ui app precedes django.contrib.admin in
+   INSTALLED_APPS. #}
+{% block extrastyle %}{{ block.super }}
+<link rel="stylesheet" href="{% static 'ui/app.css' %}">
+<link rel="stylesheet" href="{% static 'ui/admin-theme.css' %}">
+{% endblock %}
+{% block userlinks %}<a class="back-to-manager" href="/">&larr; Projects</a> / {{ block.super }}{% endblock %}

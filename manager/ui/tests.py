@@ -78,6 +78,17 @@ class PagesTests(TestCase):
         self.assertContains(response, 'aria-current="page"', count=1)
         self.assertNotContains(response, "button primary")
 
+    def test_admin_wears_the_manager_theme(self):
+        User.objects.create_superuser("root2", password="pw")
+        self.client.login(username="root2", password="pw")
+        with self.settings(DEBUG=False):
+            response = self.client.get(reverse("admin:index"))
+        self.assertContains(response, 'href="/static/ui/app.css"')
+        self.assertContains(response, 'href="/static/ui/admin-theme.css"')
+        self.assertContains(response, "&larr; Projects")
+        self.assertContains(response, "Settings</h1>")
+        self.assertContains(response, "<title>Settings | dbsync-manager</title>")
+
     def test_home_filter(self):
         self.client.login(username="viewer", password="pw")
         response = self.client.get(reverse("projects_table"), {"health": "ok"})
