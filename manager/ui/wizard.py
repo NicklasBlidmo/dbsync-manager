@@ -240,6 +240,12 @@ def inspect_targets(data: WizardData) -> tuple[list, str]:
     checks = []
     try:
         with dbinspect.connect(data.database) as db, db.cursor() as cursor:
+            if not dbinspect.postgis_installed(cursor):
+                # Refused here, before anything is created; the daemon would
+                # otherwise crash with "Cannot find or activate postgis
+                # extension" after the project exists (clean-room, 2026-09-28).
+                return [], (f"PostGIS is not installed in database '{data.database.dbname}' on "
+                            f"{data.database.host}: run CREATE EXTENSION postgis there as a superuser first")
             cursor.execute(
                 "SELECT nspname, obj_description(oid, 'pg_namespace') FROM pg_namespace WHERE nspname = ANY(%s)",
                 [names],

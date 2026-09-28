@@ -33,16 +33,35 @@ data, and multi-tenant use; one installation per organisation.
 
 ## Quick start
 
+On a Linux host with Docker, one command asks the questions below, writes
+`.env`, generates the keys, builds, starts, waits for the health check and
+creates the first user:
+
 ```sh
-cp .env.example .env && chmod 600 .env
-python3 manager/generate_keys.py --write .env    # fills the two key lines in place
-# edit .env: DATABASE_URL, ALLOWED_HOSTS, and BIND_IP/HTTP_PORT if 8080 is taken
-docker compose build
-docker compose up -d                      # existing PostGIS server
-# docker compose --profile postgis up -d  # or: bundled PostGIS
-docker compose logs -f manager            # "preflight: ... ok", migrations, "tick: no projects"
-docker compose exec manager python manage.py createsuperuser
+sh tools/setup.sh
 ```
+
+Every answer can be given as an environment variable instead
+(`SETUP_PROFILE=postgis SETUP_HTTP_PORT=8091 …`, listed at the top of the
+script), which is how a repeatable install is scripted. By hand, the same
+steps are:
+
+1. `cp .env.example .env && chmod 600 .env`
+2. Check that the port is free before building, because a collision
+   otherwise shows only after a multi-minute build: `ss -ltn | grep -w 8080`.
+   Pick another `HTTP_PORT` if it is taken.
+3. Edit `.env`. With the bundled PostGIS, set `COMPOSE_PROFILES=postgis`
+   (uncomment the line), `POSTGRES_PASSWORD`, `MANAGER_DB_PASSWORD` twice
+   (its own line and inside `DATABASE_URL`), `SYNC_DB_PASSWORD`,
+   `HTTP_PORT`, `ALLOWED_HOSTS` and `DBSYNC_BASE_URL`. With an existing
+   PostGIS server, set `DATABASE_URL`, `HTTP_PORT`, `ALLOWED_HOSTS` and
+   `DBSYNC_BASE_URL`; the `POSTGRES_*` and `SYNC_*` lines are unused.
+4. `python3 manager/generate_keys.py --write .env` fills the two key lines
+   in place (no Python on the host: see below).
+5. `docker compose build && docker compose up -d`
+6. `docker compose logs -f manager` until it prints "preflight: ... ok",
+   the migrations and "tick: no projects".
+7. `docker compose exec manager python manage.py createsuperuser`
 
 Open `http://<ALLOWED_HOSTS entry>:<HTTP_PORT>/` and log in with the account
 you just created; there are no default credentials. The groups `viewer`,
@@ -53,7 +72,21 @@ admin link. Before the first project, add under Settings (admin) →
 Registry a Mergin account that has at least Reader on the project, and a
 database row whose role owns the sync schemas or may create them
 (`GRANT CREATE ON DATABASE <db> TO <role>`); the sync runs as that role,
-never as the registry role.
+never as the registry role. With the bundled PostGIS that row is:
+
+| Field    | Value                                  |
+|----------|----------------------------------------|
+| Name     | anything, e.g. `gis`                   |
+| Host     | `postgis`                              |
+| Port     | `5432`                                 |
+| Dbname   | `POSTGRES_DB` from `.env` (`gis`)      |
+| User     | `SYNC_DB_ROLE` from `.env` (`dbsync_sync`) |
+| Password | `SYNC_DB_PASSWORD` from `.env`         |
+
+Select the row in Settings → Databases and run the action **Test
+connection**: it reports the PostgreSQL and PostGIS versions and the number
+of schemas, or the error. A wrong user name or an address that points at
+another server shows here, not in the wizard.
 
 No Python on the host? Generate the keys with the image instead, bypassing
 its entrypoint (which would run migrate first), and paste the two values
@@ -99,24 +132,27 @@ With the bundled PostGIS, `docker/postgis-init/20-manager.sh` runs once,
 when the data volume is created, and makes the `postgis` extension, the
 registry role `dbsync_manager` (password `MANAGER_DB_PASSWORD` from
 `.env`) owning the schema `dbsync_manager`, so the registry never runs as
-the `postgres` superuser, and the sync role `dbsync` (password
-`SYNC_DB_PASSWORD`) with `CREATE` on the database. `.env.example`'s
-`DATABASE_URL` already points at the registry role, and the first
-Settings → Databases row is host `postgis`, port `5432`, database `gis`,
-user `dbsync` with that password.
+the `postgres` superuser, and the sync role `SYNC_DB_ROLE` (default
+`dbsync_sync`, password `SYNC_DB_PASSWORD`) with `CREATE` on the database.
+`.env.example`'s `DATABASE_URL` already points at the registry role, and
+the table under Quick start is the first Settings → Databases row.
 
 The init scripts run only while the data volume is empty. An existing
 volume (a start before the script existed, or a failed first start that
 was not followed by `docker compose --profile postgis down -v`) keeps what
-it has; add the extension and roles by hand instead:
+it has; add the extension and roles by hand instead, as `postgres`:
 
-```sh
-docker compose exec postgis psql -U postgres -d gis -c "CREATE EXTENSION IF NOT EXISTS postgis;"
-docker compose exec postgis psql -U postgres -d gis -c \
-  "CREATE ROLE dbsync LOGIN PASSWORD '...'; GRANT CREATE ON DATABASE gis TO dbsync;"
+```sql
+CREATE EXTENSION IF NOT EXISTS postgis;
+CREATE ROLE dbsync_sync LOGIN PASSWORD '...';
+GRANT CREATE ON DATABASE gis TO dbsync_sync;
 ```
 
-Further sync roles, one per project or team, are created the same way.
+(`docker compose exec postgis psql -U postgres -d gis` opens that prompt.)
+On an existing server the operator runs the same two role statements as a
+superuser for every sync role, one per project or team; the wizard's
+preview refuses a database without the `postgis` extension before anything
+is created.
 
 The role in `DATABASE_URL` owns the `dbsync_manager` schema and nothing
 else; it is not the role syncs run as. Either give it `CREATE` on the
@@ -174,7 +210,7 @@ manager/              Django project
   ui/                 HTMX pages (§9): projects, project page, add wizard, login
   ui/static/ui/app.css  the stylesheet; its :root tokens are the visual contract
 patches/              applied to db-sync at image build (#163)
-tools/                backup.sh, the nightly dump (docs/backup.md)
+tools/                setup.sh (first install), backup.sh (nightly dump, docs/backup.md)
 docs/                 design document, backup and e-mail guides, review notes
 ```
 

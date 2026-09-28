@@ -74,7 +74,7 @@ class Database(OwnedModel):
     host = models.CharField(
         max_length=255,
         help_text="As seen from inside the manager container: 'localhost' is the container itself; "
-                  "use the server's LAN address or Docker service name.",
+                  "use the server's LAN address or Docker service name. With the bundled PostGIS: 'postgis'.",
     )
     port = models.PositiveIntegerField(default=5432)
     dbname = models.CharField(max_length=100)

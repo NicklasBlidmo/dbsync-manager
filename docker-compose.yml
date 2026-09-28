@@ -48,8 +48,9 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-gis}
       # Roles created by docker/postgis-init/20-manager.sh when the data
       # volume is first created: the registry role (DATABASE_URL in .env uses
-      # the same password) and the sync role dbsync for the first project.
+      # the same password) and the sync role for the first Database row.
       MANAGER_DB_PASSWORD: ${MANAGER_DB_PASSWORD:-}
+      SYNC_DB_ROLE: ${SYNC_DB_ROLE:-dbsync_sync}
       SYNC_DB_PASSWORD: ${SYNC_DB_PASSWORD:-}
       # ICU collation so sorting is locale-correct regardless of the host
       POSTGRES_INITDB_ARGS: "--locale-provider=icu --icu-locale=sv-SE --encoding=UTF8"

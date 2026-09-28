@@ -91,6 +91,26 @@ class PagesTests(TestCase):
         self.assertContains(response, "Settings</h1>")
         self.assertContains(response, "<title>Settings | dbsync-manager</title>")
 
+    def test_admin_test_connection_action_reports_facts_or_the_error(self):
+        from unittest import mock
+
+        User.objects.create_superuser("root3", password="pw")
+        self.client.login(username="root3", password="pw")
+        database = Database.objects.get(name="gis")
+        url = reverse("admin:registry_database_changelist")
+        data = {"action": "test_connection", "_selected_action": [database.pk]}
+        facts = {"server_version": "16.4", "postgis_version": "3.4.2", "schemas": 5}
+        with mock.patch("registry.admin.dbinspect.server_facts", return_value=facts):
+            response = self.client.post(url, data, follow=True)
+        self.assertContains(response, "ok, PostgreSQL 16.4, PostGIS 3.4.2, 5 schemas besides the system ones")
+        facts["postgis_version"] = None
+        with mock.patch("registry.admin.dbinspect.server_facts", return_value=facts):
+            response = self.client.post(url, data, follow=True)
+        self.assertContains(response, "PostGIS is not installed")
+        with mock.patch("registry.admin.dbinspect.server_facts", side_effect=OSError("connection refused")):
+            response = self.client.post(url, data, follow=True)
+        self.assertContains(response, "connection refused")
+
     def test_home_filter(self):
         self.client.login(username="viewer", password="pw")
         response = self.client.get(reverse("projects_table"), {"health": "ok"})

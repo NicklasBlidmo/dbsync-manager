@@ -3,10 +3,85 @@ Add wizard: naming rule and target decision (design §9, §15). Pure, no
 database.
 """
 
+from types import SimpleNamespace
+from unittest import mock
+
 from django.test import SimpleTestCase
 
+from registry.models import Database
+
 from . import naming
-from .wizard import decide
+from .wizard import Row, decide, inspect_targets
+
+
+class FakeCursor:
+    """Answers the two catalogue queries inspect_targets makes."""
+
+    def __init__(self, postgis=True, existing=None):
+        self.postgis = postgis
+        self.existing = existing or {}
+        self.last = ""
+
+    def execute(self, sql, params=None):
+        self.last = sql
+
+    def fetchone(self):
+        if "pg_extension" in self.last:
+            return (1,) if self.postgis else None
+        return None
+
+    def fetchall(self):
+        return list(self.existing.items())
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+class FakeConnection:
+    def __init__(self, cursor):
+        self._cursor = cursor
+
+    def cursor(self):
+        return self._cursor
+
+    def rollback(self):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+class InspectTargetsTests(SimpleTestCase):
+    def data(self):
+        return SimpleNamespace(
+            database=Database(name="gis", host="postgis", dbname="gis", user="dbsync_sync"),
+            rows=[Row("1-punkter.gpkg", "p_s_punkter", "p_b_punkter")],
+            init_from="gpkg", project="ak/x",
+        )
+
+    def test_refuses_a_database_without_postgis_before_looking_at_schemas(self):
+        # The daemon would otherwise crash after the project exists
+        # (clean-room install 2026-09-28: no extension in the bundled PostGIS).
+        cursor = FakeCursor(postgis=False)
+        with mock.patch("ui.wizard.dbinspect.connect", return_value=FakeConnection(cursor)):
+            checks, error = inspect_targets(self.data())
+        self.assertEqual(checks, [])
+        self.assertEqual(error, "PostGIS is not installed in database 'gis' on postgis: "
+                                "run CREATE EXTENSION postgis there as a superuser first")
+        self.assertIn("pg_extension", cursor.last)   # nothing else was asked
+
+    def test_with_postgis_the_rows_are_checked(self):
+        cursor = FakeCursor(postgis=True)
+        with mock.patch("ui.wizard.dbinspect.connect", return_value=FakeConnection(cursor)):
+            checks, error = inspect_targets(self.data())
+        self.assertEqual(error, "")
+        self.assertEqual([(c.sync_file, c.state) for c in checks], [("1-punkter.gpkg", "new")])
 
 
 class NamingTests(SimpleTestCase):

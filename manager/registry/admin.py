@@ -7,7 +7,9 @@ the single-writer rule of §6 holds even in the admin.
 """
 
 from django import forms
-from django.contrib import admin
+from django.contrib import admin, messages
+
+from supervisor import dbinspect
 
 from .models import (
     Database,
@@ -92,6 +94,20 @@ class DatabaseAdmin(OwnedAdmin):
     list_display = ["name", "host", "port", "dbname", "user", "created_by", "created_at"]
     search_fields = ["name", "host", "dbname", "user"]
     readonly_fields = ["created_by", "created_at"]
+    actions = ["test_connection"]
+
+    @admin.action(description="Test connection")
+    def test_connection(self, request, queryset):
+        """Connect as the row's role and report server, PostGIS and schema count,
+        or the error, so a wrong user name or address shows before the wizard."""
+        for database in queryset:
+            try:
+                facts = dbinspect.server_facts(database)
+            except Exception as exc:  # noqa: BLE001 - the message is the point
+                self.message_user(request, f"{database}: {exc}", messages.ERROR)
+                continue
+            level = messages.SUCCESS if facts["postgis_version"] else messages.WARNING
+            self.message_user(request, f"{database}: {dbinspect.describe(facts)}", level)
 
 
 @admin.register(Hook)

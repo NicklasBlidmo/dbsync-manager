@@ -10,8 +10,8 @@
 #   - the postgis extension in POSTGRES_DB (belt and braces, IF NOT EXISTS);
 #   - the registry role dbsync_manager owning the schema dbsync_manager, so
 #     the manager never runs as the postgres superuser (design §12);
-#   - the sync role dbsync with CREATE on the database, when
-#     SYNC_DB_PASSWORD is set: the values for the first Add database row.
+#   - the sync role SYNC_DB_ROLE (default dbsync_sync) with CREATE on the
+#     database, when SYNC_DB_PASSWORD is set: the first Add database row.
 # Passwords come from .env and must not contain a single quote.
 set -e
 if [ -z "${MANAGER_DB_PASSWORD}" ]; then
@@ -25,12 +25,13 @@ CREATE SCHEMA dbsync_manager AUTHORIZATION dbsync_manager;
 EOSQL
 echo "created role dbsync_manager and schema dbsync_manager in ${POSTGRES_DB}"
 
+SYNC_DB_ROLE="${SYNC_DB_ROLE:-dbsync_sync}"
 if [ -z "${SYNC_DB_PASSWORD}" ]; then
-    echo "SYNC_DB_PASSWORD is empty; not creating the sync role dbsync (create one by hand, README 'Database')"
+    echo "SYNC_DB_PASSWORD is empty; not creating the sync role ${SYNC_DB_ROLE} (create one by hand, README 'Database')"
     exit 0
 fi
 psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" <<EOSQL
-CREATE ROLE dbsync LOGIN PASSWORD '${SYNC_DB_PASSWORD}';
-GRANT CREATE ON DATABASE "${POSTGRES_DB}" TO dbsync;
+CREATE ROLE "${SYNC_DB_ROLE}" LOGIN PASSWORD '${SYNC_DB_PASSWORD}';
+GRANT CREATE ON DATABASE "${POSTGRES_DB}" TO "${SYNC_DB_ROLE}";
 EOSQL
-echo "created sync role dbsync with CREATE on ${POSTGRES_DB}"
+echo "created sync role ${SYNC_DB_ROLE} with CREATE on ${POSTGRES_DB}"

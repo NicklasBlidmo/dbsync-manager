@@ -23,5 +23,44 @@
 <main>
 {% block content %}{% endblock %}
 </main>
+<script>
+// A failed htmx request changes nothing on the page, which hid a 400 for an
+// hour (2026-09-28: the names table stopped refreshing). Say so at the top of
+// main, one notice reused, dismissable.
+(function () {
+  function show(text) {
+    var main = document.querySelector("main");
+    var box = document.getElementById("htmx-error");
+    if (!box) {
+      box = document.createElement("div");
+      box.id = "htmx-error";
+      box.className = "notice bad";
+      box.setAttribute("role", "alert");
+      var msg = document.createElement("span");
+      var close = document.createElement("button");
+      close.type = "button";
+      close.textContent = "Dismiss";
+      close.style.marginLeft = "1rem";
+      close.addEventListener("click", function () { box.remove(); });
+      box.appendChild(msg);
+      box.appendChild(close);
+      main.insertBefore(box, main.firstChild);
+    }
+    box.firstChild.textContent = text;
+    box.scrollIntoView({ block: "nearest" });
+  }
+  function path(detail) {
+    var p = detail.pathInfo && (detail.pathInfo.finalRequestPath || detail.pathInfo.requestPath);
+    return p || (detail.xhr && detail.xhr.responseURL) || "";
+  }
+  document.addEventListener("htmx:responseError", function (e) {
+    var xhr = e.detail.xhr || {};
+    show("Request failed: " + xhr.status + " " + (xhr.statusText || "") + " for " + path(e.detail) + ". The page was not updated.");
+  });
+  document.addEventListener("htmx:sendError", function (e) {
+    show("No response from the server for " + path(e.detail) + ". The page was not updated.");
+  });
+})();
+</script>
 </body>
 </html>

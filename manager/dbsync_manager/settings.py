@@ -147,8 +147,13 @@ SESSION_COOKIE_SECURE = env_bool("SECURE_COOKIES", False)
 # they log each other out, and a Secure csrftoken set by a neighbour over
 # HTTPS cannot be overwritten from plain HTTP, which makes every form here
 # fail with "CSRF cookie not set" until the browser's site data is cleared.
-SESSION_COOKIE_NAME = "dbsync_manager_sessionid"
-CSRF_COOKIE_NAME = "dbsync_manager_csrftoken"
+# Two installations of the manager on one host (production on 8090, a test
+# instance on 8091) shared a name too and logged each other out on every
+# login (2026-09-28), so the port is part of the name. Changing HTTP_PORT
+# logs everyone out once.
+_cookie_port = "".join(ch for ch in env("HTTP_PORT", "8080") if ch.isalnum()) or "8080"
+SESSION_COOKIE_NAME = f"dbsync_manager_{_cookie_port}_sessionid"
+CSRF_COOKIE_NAME = f"dbsync_manager_{_cookie_port}_csrftoken"
 CSRF_COOKIE_SECURE = SESSION_COOKIE_SECURE
 SESSION_COOKIE_HTTPONLY = True
 X_FRAME_OPTIONS = "DENY"

@@ -30,7 +30,14 @@ Invariants learned the hard way:
   spaces. With duplicate lines the last one wins.
 - The host is shared. Assume other Compose projects and other Django apps on
   the same address: no hardcoded host port (`BIND_IP`, `HTTP_PORT`), own
-  cookie names, loopback always in `ALLOWED_HOSTS` for the healthcheck.
+  cookie names that also carry `HTTP_PORT` (two instances of the manager on
+  one host logged each other out, 2026-09-28), loopback always in
+  `ALLOWED_HOSTS` for the healthcheck.
+- Init scripts for the bundled PostGIS are mounted one file at a time into
+  `/docker-entrypoint-initdb.d`, never as the directory: a directory mount
+  masks the image's own `10_postgis.sh` and the `postgis` extension is
+  never created (clean-room install, 2026-09-28). `registry/tests_deploy.py`
+  guards it.
 - A start-up failure must produce one readable line and a pause, never a
   traceback in a tight restart loop. New failure modes found in the field go
   into `preflight.py` with a test.

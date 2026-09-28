@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- Cookie names now carry `HTTP_PORT` (`dbsync_manager_8080_sessionid`):
+  two installations on one host shared a cookie and logged each other out.
+  **Everyone is logged out once at this upgrade**, and again if `HTTP_PORT`
+  changes.
+- A failed HTMX request (4xx, 5xx or no response) shows a dismissable
+  notice at the top of the page instead of changing nothing.
+- Settings → Databases: action **Test connection** reports PostgreSQL and
+  PostGIS versions and the schema count, or the error.
+- Add wizard: the preview refuses a database without the `postgis`
+  extension before anything is created.
+- Bundled PostGIS: the init script also creates the sync role
+  `SYNC_DB_ROLE` (default `dbsync_sync`) from `SYNC_DB_PASSWORD`; the
+  README lists the first Database row as a table.
+- `tools/setup.sh`: one-command install on a Linux host with Docker,
+  interactive or driven by `SETUP_*` variables.
+- `.env.example` opens with the exact lines for each case; the README's
+  edit step is prose, not a comment in a code block; the port is checked
+  before the build.
 - Add wizard, step 2: the schema-name table is fetched with POST. As a
   GET the whole form rode in the query string, and with 18 GeoPackages
   it passed gunicorn's request-line limit, so the table never refreshed.
