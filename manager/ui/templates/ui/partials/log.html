@@ -1,4 +1,4 @@
 <pre>{{ log_tail|default:"(no log yet)" }}</pre>
 {% if stderr_tail %}
-<details style="margin-top:.4rem"><summary class="muted">stderr (last 20 lines)</summary><pre>{{ stderr_tail }}</pre></details>
+<details class="mt-2"><summary class="muted">stderr (last 20 lines)</summary><pre>{{ stderr_tail }}</pre></details>
 {% endif %}

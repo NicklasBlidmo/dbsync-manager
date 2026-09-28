@@ -1,12 +1,14 @@
 {% load ui_extras %}
 <div class="panel">
-  <p>
+  <p class="status-bar">
     <span class="badge {{ project.desired_state|badge }}">desired: {{ project.desired_state }}</span>
     <span class="badge {{ project.process_state|badge }}">process: {{ project.process_state }}</span>
     <span class="badge {{ project.health|badge }}">health: {{ project.get_health_display }}</span>
     {% if project.health_since %}<span class="muted">since {{ project.health_since|date:"Y-m-d H:i" }}</span>{% endif %}
+    {% if project.health == "ok" %}<span class="muted">· no divergence detected (counts, versions); not a content verification</span>{% endif %}
+    {% if project.removed_at %}<span class="badge muted">removed {{ project.removed_at|date:"Y-m-d H:i" }}</span>{% endif %}
     {% if can_operate and not project.removed_at %}
-      <span style="float:right">
+      <span class="actions">
         {% if operation_open %}
         <span class="muted" title="operation {{ operation.pk }} is open">actions disabled while an operation is open</span>
         {% else %}
@@ -20,58 +22,83 @@
         {% endif %}
       </span>
     {% endif %}
-    {% if project.removed_at %}<span class="badge muted">removed {{ project.removed_at|date:"Y-m-d H:i" }}</span>{% endif %}
   </p>
-  {% if project.process_reason %}<pre style="max-height:10rem">{{ project.process_reason }}</pre>{% endif %}
+  {% if project.process_reason %}<pre class="pre-short mt-2">{{ project.process_reason }}</pre>{% endif %}
   {% for key, since in active_conditions %}
     <div class="notice {% if 'divergence' in key or 'stranded' in key or 'stuck' in key or 'crashed' in key %}bad{% endif %}">
       <strong>{{ key|condition_label }}</strong> <span class="muted">active since {{ since }}</span>
     </div>
   {% endfor %}
-  {% if project.health == "ok" %}<p class="muted">No divergence detected (counts, versions). This is not a content verification (design §6).</p>{% endif %}
-  <p class="muted" style="margin:.2rem 0 0">Direction is assessed from the Mergin permission and from database roles that can write to the synced tables; superusers are not listed, since they can always write.</p>
+  {% if facts.checked %}
+  <dl class="facts">
+    <dt>Server</dt><dd>{{ facts.server_version|version }}
+      {% if facts.servers_differ %}<span class="badge warn" title="connections report different server versions; one check is stale">server versions differ</span>{% endif %}</dd>
+    <dt>Direction</dt><dd>
+      {% if facts.direction %}<span class="badge {{ facts.direction|badge }}">{{ facts.direction }}</span>{% else %}<span class="muted">cannot be assessed</span>{% endif %}
+      {% if facts.directions_differ %}<span class="badge warn">{% for d, n in facts.direction_counts %}{{ d }} ×{{ n }}{% if not forloop.last %}, {% endif %}{% endfor %}</span>{% endif %}
+      <span class="muted">· Mergin permission: {{ facts.permission|default:"unknown" }}</span></dd>
+    <dt>Other writers</dt><dd{% if facts.writers_tooltip %} title="{{ facts.writers_tooltip }}"{% endif %}>
+      {% if facts.writers_unknown %}could not be determined{% elif facts.writers %}{{ facts.writers|join:", " }}{% if facts.writers_tooltip %} <span class="muted">(differs per schema, see tooltip)</span>{% endif %}{% else %}none found{% endif %}
+      <span class="muted">· superusers are not listed, since they can always write</span></dd>
+  </dl>
+  {% endif %}
 </div>
 
-<div class="grid">
-{% for status in statuses %}
-  <div class="panel">
-    <strong>{{ status.connection.sync_file }}</strong>
-    <div class="schemas" title="modified: {{ status.connection.modified_schema }}&#10;base: {{ status.connection.base_schema }}">{{ status.connection.modified_schema }} / {{ status.connection.base_schema }}</div>
-    <dl style="margin-top:.5rem">
-      <dt>Versions</dt><dd>server {{ status.server_version|version }} · checkout {{ status.local_version|version }} · database {{ status.db_version|version }}
-        {% if status.interrupted_pull %}<span class="badge warn">database behind checkout</span>{% endif %}</dd>
-      <dt>Direction</dt><dd>{% if status.direction %}<span class="badge {{ status.direction|badge }}">{{ status.get_direction_display }}</span>{% else %}<span class="muted">unknown</span>{% endif %}
-        <span class="muted">· Mergin permission: {{ status.mergin_permission|default:"unknown" }}
-        · other writers: {% if status.db_writers is None %}could not be determined{% elif status.db_writers %}{{ status.db_writers|join:", " }}{% else %}none found{% endif %}</span></dd>
-      <dt>Checked</dt><dd>{% if status.checked_at %}{{ status.checked_at|date:"Y-m-d H:i:s" }}{% else %}never{% endif %}
-        {% if status.last_pull_at %}<span class="muted">· last pull seen {{ status.last_pull_at|date:"Y-m-d H:i" }}</span>{% endif %}</dd>
-      {% if status.check_error %}<dt>Check</dt><dd class="notice {% if not status.last_ok_check_at or status.last_ok_check_at != status.checked_at %}bad{% endif %}">{{ status.check_error }}</dd>{% endif %}
-    </dl>
-    {% if status.table_rows %}
-    <div class="scroll-x">
-    <table style="margin-top:.5rem">
-      <thead><tr><th>Table</th><th class="num" title="rows in the GeoPackage">GPKG</th><th class="num" title="rows in the base schema">Base</th><th class="num" title="rows in the modified schema">Mod</th><th></th></tr></thead>
-      <tbody>
-      {% for row in status.table_rows %}
-        <tr>
-          <td>{{ row.table }}</td>
-          <td class="num">{{ row.gpkg|default_if_none:"–" }}</td>
-          <td class="num">{{ row.base|default_if_none:"–" }}</td>
-          <td class="num">{{ row.modified|default_if_none:"–" }}</td>
-          <td>{% if row.streak >= 2 %}<span class="badge bad">base behind ×{{ row.streak }}</span>{% elif row.streak == 1 %}<span class="badge muted">mismatch once</span>{% endif %}
-              {% if row.pending %}{% if status.interrupted_pull %}<span class="badge warn">interrupted pull, not user edits</span>{% else %}<span class="badge info">pending database changes</span>{% endif %}{% endif %}</td>
-        </tr>
-      {% endfor %}
-      </tbody>
-    </table>
-    </div>
+{% if rows %}
+<table class="table connections">
+  <thead>
+    <tr>
+      <th>File</th><th>Schemas</th><th class="num">Checkout</th><th class="num">Database</th>
+      <th class="num" title="rows: GeoPackage / base / modified">Rows</th><th>Checked</th><th>State</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for row in rows %}
+    <tr class="conn{% if row.attention %} attention{% endif %}" id="conn-{{ row.connection.pk }}">
+      <td class="nowrap">
+        {% if row.tables %}<button type="button" class="toggle" aria-expanded="{{ row.expanded|yesno:'true,false' }}"
+                aria-controls="detail-{{ row.connection.pk }}" data-conn="{{ row.connection.pk }}" title="per-table counts"></button>{% endif %}
+        {{ row.connection.sync_file }}
+      </td>
+      <td class="schemas">{{ row.connection.modified_schema }} / {{ row.connection.base_schema }}</td>
+      {% if row.status and row.status.checked_at %}
+      <td class="num{% if row.checkout_muted %} muted{% endif %}">{{ row.status.local_version|version }}
+        {% if row.checkout_badge %}<span class="badge {{ row.checkout_badge.0 }}">{{ row.checkout_badge.1 }}</span>{% endif %}</td>
+      <td class="num{% if row.db_muted %} muted{% endif %}">{{ row.status.db_version|version }}
+        {% if row.db_badge %}<span class="badge {{ row.db_badge.0 }}">{{ row.db_badge.1 }}</span>{% endif %}</td>
+      <td class="num rows{% if row.rows_muted %} muted{% endif %}">{{ row.summary }}</td>
+      <td class="muted nowrap" title="checked {{ row.status.checked_at|date:'Y-m-d H:i:s' }}{% if row.status.last_pull_at %}; last pull seen {{ row.status.last_pull_at|date:'Y-m-d H:i' }}{% endif %}">
+        {% if row.status.checked_at|date:"Y-m-d" == now_date %}{{ row.status.checked_at|date:"H:i:s" }}{% else %}{{ row.status.checked_at|date:"Y-m-d H:i" }}{% endif %}
+        {% if row.check_badge %}<span class="badge {{ row.check_badge.0 }}" title="{{ row.status.check_error }}">{{ row.check_badge.1 }}</span>{% endif %}</td>
+      <td>{% for cls, text in row.badges %}<span class="badge {{ cls }}">{{ text }}</span> {% endfor %}</td>
+      {% else %}
+      <td class="num muted">–</td><td class="num muted">–</td><td class="num muted">–</td>
+      <td class="muted">{{ row.summary }}</td><td></td>
+      {% endif %}
+    </tr>
+    {% if row.tables %}
+    <tr class="detail" id="detail-{{ row.connection.pk }}"{% if not row.expanded %} hidden{% endif %}>
+      <td colspan="7">
+        <table class="table">
+          <thead><tr><th>Table</th><th class="num">GPKG</th><th class="num">Base</th><th class="num">Mod</th><th></th></tr></thead>
+          <tbody>
+          {% for t in row.tables %}
+            <tr>
+              <td>{{ t.table }}</td>
+              <td class="num{% if t.agree %} muted{% endif %}">{{ t.gpkg|default_if_none:"–" }}</td>
+              <td class="num{% if t.agree %} muted{% endif %}">{{ t.base|default_if_none:"–" }}</td>
+              <td class="num{% if t.agree %} muted{% endif %}">{{ t.modified|default_if_none:"–" }}</td>
+              <td>{% for cls, text in t.badges %}<span class="badge {{ cls }}">{{ text }}</span> {% endfor %}</td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </td>
+    </tr>
     {% endif %}
-  </div>
-{% empty %}
-  {% for conn in connections %}
-  <div class="panel"><strong>{{ conn.sync_file }}</strong> <span class="muted">→ {{ conn.modified_schema }} / {{ conn.base_schema }} · not checked yet</span></div>
-  {% empty %}
-  <div class="panel muted">This project has no connections. Add its GeoPackages in the admin.</div>
   {% endfor %}
-{% endfor %}
-</div>
+  </tbody>
+</table>
+{% else %}
+<div class="panel muted">This project has no connections. Add its GeoPackages in the admin.</div>
+{% endif %}

@@ -1,5 +1,5 @@
 {% load ui_extras %}
-<table>
+<table class="table">
   <thead>
     <tr>
       <th>Project</th><th>Desired</th><th>Process</th><th>Health</th><th>Direction</th>
@@ -14,7 +14,7 @@
       <td><span class="badge {{ row.project.desired_state|badge }}">{{ row.project.desired_state }}</span></td>
       <td><span class="badge {{ row.project.process_state|badge }}" title="{{ row.project.process_reason|truncatechars:200 }}">{{ row.project.process_state }}</span></td>
       <td><span class="badge {{ row.project.health|badge }}">{{ row.project.get_health_display }}</span>
-          {% if row.check_error %}<span class="muted" title="latest check failed">!</span>{% endif %}</td>
+          {% if row.check_error %}<span class="badge bad" title="{{ row.check_error_text }}">check failed</span>{% endif %}</td>
       <td>{% if row.direction %}<span class="badge {{ row.direction|badge }}">{{ row.direction }}</span>{% else %}<span class="muted">–</span>{% endif %}</td>
       <td class="num">{{ row.server_version|version }}</td>
       <td class="num">{{ row.local_version|version }}</td>

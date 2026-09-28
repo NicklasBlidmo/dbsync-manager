@@ -1,7 +1,7 @@
 {% extends "ui/base.html" %}
 {% block title %}Projects · dbsync-manager{% endblock %}
 {% block content %}
-<h1>Projects</h1>
+<h1 class="page-title">Projects</h1>
 <form class="filters" method="get" hx-get="{% url 'projects_table' %}" hx-target="#projects" hx-trigger="change">
   <label>Desired
     <select name="desired_state"><option value="">all</option>
@@ -17,7 +17,7 @@
     </select></label>
   {% if can_add %}<a class="button" href="{% url 'add_start' %}">Add sync</a>{% endif %}
 </form>
-<div id="projects" hx-get="{% url 'projects_table' %}" hx-include=".filters" hx-trigger="every 10s" hx-swap="innerHTML">
+<div id="projects" class="mt-3" hx-get="{% url 'projects_table' %}" hx-include=".filters" hx-trigger="every 10s" hx-swap="innerHTML">
   {% include "ui/partials/projects_table.html" %}
 </div>
 {% endblock %}

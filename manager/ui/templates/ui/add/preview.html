@@ -1,7 +1,7 @@
 {% extends "ui/base.html" %}
 {% block title %}Add {{ data.project }} · dbsync-manager{% endblock %}
 {% block content %}
-<h1>Add sync <span class="muted">step 3 of 3: preview {{ data.project }}</span></h1>
+<h1 class="page-title">Add sync <span class="muted">step 3 of 3: preview {{ data.project }}</span></h1>
 
 {% for error in preview.errors %}<div class="notice bad">{{ error }}</div>{% endfor %}
 
@@ -17,7 +17,7 @@
 </div>
 
 {% if preview.checks %}
-<table>
+<table class="table">
   <thead><tr><th>GeoPackage</th><th>modified</th><th>base</th><th>Target</th><th>Writers found</th></tr></thead>
   <tbody>
   {% for c in preview.checks %}
@@ -31,7 +31,7 @@
 </table>
 {% endif %}
 
-<form method="post" action="{% url 'add_create' %}" style="margin-top:1rem">
+<form method="post" action="{% url 'add_create' %}" class="mt-4">
   {% csrf_token %}
   {% for name, value in hidden %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
   {% if preview.needs_ack %}

@@ -61,11 +61,18 @@ class PagesTests(TestCase):
     def test_project_page_shows_interrupted_pull_and_events(self):
         self.client.login(username="operator", password="pw")
         response = self.client.get(reverse("project", args=[self.project.pk]))
-        self.assertContains(response, "database behind checkout")
+        # Connection row: database column carries the badge, the per-table
+        # detail is auto-expanded because a table row has a badge.
+        self.assertContains(response, "behind checkout")
         self.assertContains(response, "interrupted pull, not user edits")
+        self.assertContains(response, 'aria-expanded="true"')
         self.assertContains(response, "db_behind (1-punkter.gpkg)")
+        # Project-level facts appear once in the status panel.
+        self.assertContains(response, "Mergin permission: reader")
+        self.assertContains(response, "superusers are not listed", count=1)
         self.assertContains(response, "Pause")
         self.assertContains(response, "(no log yet)")
+        self.assertContains(response, 'href="/static/ui/app.css"')
 
     def test_viewer_cannot_pause(self):
         self.client.login(username="viewer", password="pw")
@@ -91,6 +98,84 @@ class PagesTests(TestCase):
         self.client.login(username="operator", password="pw")
         response = self.client.get(reverse("project_action", args=[self.project.pk, "pause"]))
         self.assertEqual(response.status_code, 405)
+
+
+@tag("db")
+class ConnectionTableTests(TestCase):
+    """The connections table (slice 8 brief, part B): in-phase rows are muted
+    and collapsed, deviating rows sort first with badges and open detail."""
+
+    @classmethod
+    def setUpTestData(cls):
+        from django.utils import timezone
+
+        ensure_groups()
+        cls.viewer = User.objects.create_user("viewer8", password="pw")
+        cls.viewer.groups.add(Group.objects.get(name="viewer"))
+        account = MerginAccount(name="svc8", username="svc")
+        account.secret = "pw"
+        account.save()
+        database = Database(name="gis8", host="db", dbname="ak", user="u")
+        database.password = "pw"
+        database.save()
+        cls.project = SyncProject.objects.create(
+            mergin_project="ak/table", mergin_account=account, database=database, schema_prefix="t",
+            health=SyncProject.Health.OK,
+        )
+        now = timezone.now()
+
+        def conn(name, **status):
+            c = SyncConnection.objects.create(project=cls.project, sync_file=name, modified_schema=f"t_s_{name[2:-5]}",
+                                              base_schema=f"t_b_{name[2:-5]}")
+            SyncStatus.objects.create(project=cls.project, connection=c, server_version=20, checked_at=now,
+                                      last_ok_check_at=now, mergin_permission="reader", direction="one_way", **status)
+            return c
+
+        # a: in phase, single table
+        conn("1-a.gpkg", local_version=20, db_version=20, gpkg_count={"a": 3}, base_count={"a": 3}, modified_count={"a": 3})
+        # b: checkout and database behind the server, single table
+        conn("1-b.gpkg", local_version=19, db_version=19, gpkg_count={"b": 3}, base_count={"b": 3}, modified_count={"b": 3})
+        # c: two tables, in phase
+        conn("1-c.gpkg", local_version=20, db_version=20, gpkg_count={"c1": 1, "c2": 2},
+             base_count={"c1": 1, "c2": 2}, modified_count={"c1": 1, "c2": 2})
+        # d: two tables, one with base behind for two checks
+        conn("1-d.gpkg", local_version=20, db_version=20, gpkg_count={"d1": 5, "d2": 2},
+             base_count={"d1": 4, "d2": 2}, modified_count={"d1": 4, "d2": 2}, mismatch_streak={"d1": 2})
+
+    def setUp(self):
+        self.client.login(username="viewer8", password="pw")
+
+    def test_rows_facts_and_sorting(self):
+        response = self.client.get(reverse("project", args=[self.project.pk]))
+        html = response.content.decode()
+        self.assertNotIn('class="grid"', html)                      # no card grid
+        self.assertContains(response, 'class="table connections"')
+        # deviating rows first (b, d), then the in-phase ones in file order (a, c)
+        order = [html.index(f"1-{x}.gpkg") for x in "bdac"]
+        self.assertEqual(order, sorted(order))
+        self.assertContains(response, "behind server", count=2)      # checkout and database of b
+        self.assertContains(response, "base behind ×2")
+        self.assertContains(response, "2 tables", count=2)           # c and d
+        self.assertContains(response, "<dt>Server</dt><dd>v20", count=1)   # server version once, in the panel
+        self.assertContains(response, "server versions differ", count=0)
+        self.assertContains(response, "none found")
+        self.assertContains(response, "superusers are not listed", count=1)
+
+    def test_expansion_follows_the_data(self):
+        response = self.client.get(reverse("project_status", args=[self.project.pk]))
+        html = response.content.decode()
+        import re
+
+        def toggle_state(file_name):
+            match = re.search(rf'aria-expanded="(true|false)"[^>]*data-conn="(\d+)"[^>]*></button>\s*{re.escape(file_name)}', html)
+            self.assertIsNotNone(match, file_name)
+            return match.group(1), match.group(2)
+
+        self.assertEqual(toggle_state("1-c.gpkg")[0], "false")       # two tables, in phase: collapsed
+        expanded, pk = toggle_state("1-d.gpkg")
+        self.assertEqual(expanded, "true")                            # streak >= 2: opened by the server
+        self.assertNotIn(f'id="detail-{pk}" hidden', html)
+        self.assertIn(f'id="detail-{toggle_state("1-c.gpkg")[1]}" hidden', html)
 
 
 @tag("db")

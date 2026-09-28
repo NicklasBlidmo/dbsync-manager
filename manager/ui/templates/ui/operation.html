@@ -1,7 +1,7 @@
 {% extends "ui/base.html" %}
 {% block title %}{{ kind }} {{ project.mergin_project }} · dbsync-manager{% endblock %}
 {% block content %}
-<h1>{% if kind == "remove" %}Remove sync{% else %}Re-initialise sync{% endif %} <span class="muted">{{ project.mergin_project }}</span></h1>
+<h1 class="page-title">{% if kind == "remove" %}Remove sync{% else %}Re-initialise sync{% endif %} <span class="muted">{{ project.mergin_project }}</span></h1>
 
 {% for error in errors %}<div class="notice bad">{{ error }}</div>{% endfor %}
 
@@ -15,7 +15,7 @@
      from scratch. The <code>post_init</code> hook runs afterwards as for a new project.</p>
   {% endif %}
 
-  <h2>What would be dropped</h2>
+  <h2 class="section-title">What would be dropped</h2>
   <ul>
   {% for conn in connections %}<li>{{ conn.sync_file }}: <code>{{ conn.base_schema }}</code>, <code>{{ conn.modified_schema }}</code></li>{% endfor %}
   </ul>
@@ -44,7 +44,7 @@
   {% endif %}
   <p><label>Type the project name <code>{{ project.mergin_project }}</code> to confirm
     {% if not needs_name %}<span class="muted">(required when dropping the schemas)</span>{% endif %}<br>
-    <input name="confirm_name" autocomplete="off" style="width:100%"></label></p>
+    <input name="confirm_name" autocomplete="off" class="full-width"></label></p>
   <p>
     <button type="submit">{% if kind == "remove" %}Remove{% else %}Re-initialise{% endif %}</button>
     <a class="button" href="{% url 'project' project.pk %}">Back</a>

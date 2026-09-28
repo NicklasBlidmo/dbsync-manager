@@ -1,7 +1,7 @@
 {% extends "ui/base.html" %}
 {% block title %}Add sync · dbsync-manager{% endblock %}
 {% block content %}
-<h1>Add sync <span class="muted">step 1 of 3: choose the project</span></h1>
+<h1 class="page-title">Add sync <span class="muted">step 1 of 3: choose the project</span></h1>
 {% if not accounts or not databases %}
 <div class="notice bad">Add a Mergin account and a database under Settings (admin) first.</div>
 {% endif %}

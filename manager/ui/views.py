@@ -60,7 +60,12 @@ def _project_rows(qs):
             "db_version": min((s.db_version or 0 for s in statuses), default=None) or None,
             "last_pull_at": max((s.last_pull_at for s in statuses if s.last_pull_at), default=None),
             "direction": _project_direction(statuses),
-            "check_error": any(s.check_error for s in statuses),
+            # Failed = the latest check did not succeed (a best-effort note on a
+            # successful check is not a failure).
+            "check_error": any(
+                s.check_error and (s.last_ok_check_at is None or s.last_ok_check_at != s.checked_at) for s in statuses
+            ),
+            "check_error_text": "; ".join(s.check_error for s in statuses if s.check_error)[:300],
         })
     return rows
 
@@ -96,30 +101,121 @@ def projects_table(request):
     return render(request, "ui/partials/projects_table.html", {"rows": _project_rows(qs), "filters": filters})
 
 
+def _table_rows(status):
+    """Per-table counts with the badge each row earns (design §6)."""
+    tables = sorted(set(status.gpkg_count) | set(status.base_count) | set(status.modified_count))
+    interrupted = (
+        status.db_version is not None and status.local_version is not None
+        and status.db_version < status.local_version
+    )
+    rows = []
+    for t in tables:
+        gpkg, base, modified = status.gpkg_count.get(t), status.base_count.get(t), status.modified_count.get(t)
+        streak = (status.mismatch_streak or {}).get(t, 0)
+        pending = modified is not None and base is not None and modified != base
+        badges = []
+        if streak >= 2:
+            badges.append(("bad", f"base behind ×{streak}"))
+        elif streak == 1:
+            badges.append(("muted", "mismatch once"))
+        if pending:
+            badges.append(("warn", "interrupted pull, not user edits") if interrupted else ("info", "pending database changes"))
+        rows.append({"table": t, "gpkg": gpkg, "base": base, "modified": modified, "streak": streak,
+                     "pending": pending, "badges": badges,
+                     "agree": gpkg is not None and gpkg == base == modified})
+    return rows, interrupted
+
+
+def _connection_rows(project):
+    """One row per connection for the status table (slice 8 brief, B2/B3).
+
+    "In phase": local == server == db and every table agrees with streak 0
+    and nothing pending. Rows that deviate carry badges and sort first.
+    """
+    statuses = {s.connection_id: s for s in project.statuses.select_related("connection")}
+    rows = []
+    for conn in project.connections.all():
+        status = statuses.get(conn.pk)
+        row = {"connection": conn, "status": status, "badges": [], "checkout_badge": None, "db_badge": None,
+               "check_badge": None, "tables": [], "expanded": False, "in_phase": False, "summary": ""}
+        if status is None or status.checked_at is None:
+            row["summary"] = "not checked yet"
+            rows.append(row)
+            continue
+        tables, interrupted = _table_rows(status)
+        row["tables"] = tables
+        row["interrupted_pull"] = interrupted
+        server, local, db = status.server_version, status.local_version, status.db_version
+        row["checkout_muted"] = local is not None and local == server
+        row["db_muted"] = db is not None and db == local
+        if server is not None and local is not None and local < server:
+            row["checkout_badge"] = ("warn", "behind server")
+        if interrupted:
+            row["db_badge"] = ("warn", "behind checkout")
+        elif server is not None and db is not None and db < server:
+            row["db_badge"] = ("warn", "behind server")
+        for table in tables:
+            for badge in table["badges"]:
+                if badge not in row["badges"]:
+                    row["badges"].append(badge)
+        failed = bool(status.check_error) and (status.last_ok_check_at is None or status.last_ok_check_at != status.checked_at)
+        if failed:
+            row["check_badge"] = ("bad", "check failed")
+        elif status.check_error:
+            row["check_badge"] = ("muted", "note")
+        all_agree = bool(tables) and all(t["agree"] and t["streak"] == 0 and not t["pending"] for t in tables)
+        row["in_phase"] = (server is not None and local == server and db == server and all_agree and not failed)
+        row["rows_muted"] = all_agree
+        if len(tables) == 1:
+            t = tables[0]
+            row["summary"] = f"{_n(t['gpkg'])} / {_n(t['base'])} / {_n(t['modified'])}"
+        else:
+            row["summary"] = f"{len(tables)} tables"
+        row["expanded"] = any(t["badges"] for t in tables)
+        row["attention"] = bool(row["badges"] or row["checkout_badge"] or row["db_badge"] or failed)
+        rows.append(row)
+    rows.sort(key=lambda r: (not r.get("attention"), r["connection"].sync_file.lower()))
+    return rows
+
+
+def _n(value):
+    return "–" if value is None else str(value)
+
+
+def _project_facts(project, rows):
+    """Project-level facts shown once in the status panel (slice 8 brief, B1)."""
+    from collections import Counter
+
+    statuses = [r["status"] for r in rows if r["status"] is not None and r["status"].checked_at]
+    servers = {s.server_version for s in statuses if s.server_version is not None}
+    permissions = [s.mergin_permission for s in statuses if s.mergin_permission]
+    directions = Counter(s.direction for s in statuses if s.direction)
+    writers_by_schema = {s.connection.modified_schema: s.db_writers for s in statuses if s.db_writers}
+    unknown_writers = any(s.db_writers is None for s in statuses)
+    writers = sorted({w for ws in writers_by_schema.values() for w in ws})
+    facts = {
+        "server_version": max(servers) if servers else None,
+        "servers_differ": len(servers) > 1,
+        "permission": permissions[0] if permissions else None,
+        "direction": directions.most_common(1)[0][0] if directions else None,
+        "directions_differ": len(directions) > 1,
+        "direction_counts": [(d, n) for d, n in directions.most_common()],
+        "writers": writers,
+        "writers_unknown": unknown_writers and not writers,
+        "writers_tooltip": "; ".join(f"{schema}: {', '.join(ws)}" for schema, ws in sorted(writers_by_schema.items()))
+        if len({tuple(ws) for ws in writers_by_schema.values()}) > 1 else "",
+        "checked": bool(statuses),
+    }
+    return facts
+
+
 def _project_context(project):
-    statuses = list(project.statuses.select_related("connection").order_by("connection__sync_file"))
-    for status in statuses:
-        tables = sorted(set(status.gpkg_count) | set(status.base_count) | set(status.modified_count))
-        status.table_rows = [
-            {
-                "table": t,
-                "gpkg": status.gpkg_count.get(t),
-                "base": status.base_count.get(t),
-                "modified": status.modified_count.get(t),
-                "streak": (status.mismatch_streak or {}).get(t, 0),
-                "pending": (status.modified_count.get(t) is not None and status.base_count.get(t) is not None
-                            and status.modified_count.get(t) != status.base_count.get(t)),
-            }
-            for t in tables
-        ]
-        status.interrupted_pull = (
-            status.db_version is not None and status.local_version is not None
-            and status.db_version < status.local_version
-        )
+    rows = _connection_rows(project)
     operation = _open_operation(project) or project.operations.order_by("-requested_at").first()
     return {
         "project": project,
-        "statuses": statuses,
+        "rows": rows,
+        "facts": _project_facts(project, rows),
         "connections": list(project.connections.all()),
         "active_conditions": sorted((project.active_conditions or {}).items()),
         "can_operate": False,
@@ -135,6 +231,7 @@ def project_detail(request, pk):
     context = _project_context(project)
     context["events"] = project.events.select_related("user").order_by("-at")[:EVENTS_ON_PAGE]
     context["can_operate"] = request.user.has_perm("registry.change_syncproject")
+    context["now_date"] = _today()
     context.update(_log_context(project))
     context.update(_hooks_context(project))
     context.update(_runs_context(project))
@@ -146,7 +243,14 @@ def project_status(request, pk):
     project = get_object_or_404(SyncProject, pk=pk)
     context = _project_context(project)
     context["can_operate"] = request.user.has_perm("registry.change_syncproject")
+    context["now_date"] = _today()
     return render(request, "ui/partials/status.html", context)
+
+
+def _today():
+    from django.utils import timezone
+
+    return timezone.localdate().strftime("%Y-%m-%d")
 
 
 def _log_context(project):

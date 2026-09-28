@@ -820,6 +820,13 @@ does mean a pull happened; the hook is not told which one.
   is running, since when, and on failure the error with **retry** and,
   where allowed, **cancel** buttons. While an operation is open the other
   action buttons are disabled with the reason shown.
+  Layout (slice 8, 2026-09-28): project-level facts (server version,
+  permission, direction, other writers) appear once in the status panel;
+  the connections are one table row each with checkout, database and row
+  counts muted when in phase and badged when not, rows that deviate
+  sorted first, and a per-table detail row that opens by itself when a
+  table carries a badge. All styling lives in `static/ui/app.css`, whose
+  `:root` token block is the contract for the visual pass.
 - **Settings**: Mergin accounts, databases, hooks, users (admin only), e-mail
   (SMTP).
 - **JSON API** (same views, `Accept: application/json`): `GET /api/projects`,

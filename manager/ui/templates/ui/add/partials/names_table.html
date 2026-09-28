@@ -1,11 +1,11 @@
-<table>
+<table class="table">
   <thead><tr><th>GeoPackage</th><th>modified schema</th><th>base schema</th></tr></thead>
   <tbody>
   {% for row in rows %}
     <tr>
       <td>{{ row.file }}<input type="hidden" name="file" value="{{ row.file }}"></td>
-      <td><input name="modified" value="{{ row.modified }}" maxlength="63" pattern="[a-z_][a-z0-9_]*" style="width:100%"></td>
-      <td><input name="base" value="{{ row.base }}" maxlength="63" pattern="[a-z_][a-z0-9_]*" style="width:100%"></td>
+      <td><input name="modified" value="{{ row.modified }}" maxlength="63" pattern="[a-z_][a-z0-9_]*" class="full-width"></td>
+      <td><input name="base" value="{{ row.base }}" maxlength="63" pattern="[a-z_][a-z0-9_]*" class="full-width"></td>
     </tr>
   {% empty %}
     <tr><td colspan="3" class="muted">Tick at least one GeoPackage.</td></tr>

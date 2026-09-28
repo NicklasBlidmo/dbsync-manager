@@ -1,7 +1,7 @@
 {% if error %}<div class="notice bad">Mergin API: {{ error }}</div>
 {% elif not workspace %}<p class="muted">Choose a workspace to list its projects.</p>
 {% else %}
-<table>
+<table class="table">
   <thead><tr><th>Project</th><th class="num">Version</th><th>Updated</th><th title="From the project list, which only says whether the account can push unless it names the account explicitly; the exact role is shown in the next step">Account's permission</th><th></th></tr></thead>
   <tbody>
   {% for p in results %}

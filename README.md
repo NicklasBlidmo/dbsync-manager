@@ -145,6 +145,7 @@ manager/              Django project
   registry/           data model (§5), crypto (§4), admin, groups (§4)
   supervisor/         `manage.py supervise` (§6): processes, config, check, health
   ui/                 HTMX pages (§9): projects, project page, add wizard, login
+  ui/static/ui/app.css  the stylesheet; its :root tokens are the visual contract
 patches/              applied to db-sync at image build (#163)
 tools/                check_sync.sh, standalone cron check without the manager
 docs/                 design document
