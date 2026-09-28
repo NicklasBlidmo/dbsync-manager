@@ -9,7 +9,7 @@
   <dl>
     <dt>Mergin</dt><dd>{{ data.project }}{% if preview.version %} at v{{ preview.version }}{% endif %}{% if data.account %} · account {{ data.account.name }}:{% endif %}
       {% if preview.permission %}<span class="badge info">{{ preview.permission }}</span>{% else %}<span class="badge bad">no access</span>{% endif %}</dd>
-    <dt>Database</dt><dd>{% if data.database %}{{ data.database.name }}{% endif %} · prefix {{ data.prefix }} · init from {{ data.init_from }} · every {{ data.sleep_time }} s</dd>
+    <dt>Database</dt><dd>{% if data.database %}<strong>{{ data.database.name }}</strong> ({{ data.database.user }}@{{ data.database.host }}:{{ data.database.port }}/{{ data.database.dbname }}){% endif %} · prefix {{ data.prefix }} · init from {{ data.init_from }} · every {{ data.sleep_time }} s</dd>
     <dt>Direction</dt><dd>{% if preview.direction %}<span class="badge {% if preview.direction == "db_edits_cannot_push" %}warn{% elif preview.direction == "one_way" %}ok{% else %}info{% endif %}">{{ preview.direction }}</span>{% else %}<span class="muted">cannot be assessed</span>{% endif %}</dd>
     {% if data.hooks %}<dt>Hooks</dt><dd>{% for kind, hook in data.hooks.items %}{{ kind }}: {{ hook.name }}{% if not forloop.last %} · {% endif %}{% endfor %}</dd>{% endif %}
     {% if data.notify_emails %}<dt>Alerts to</dt><dd>{{ data.notify_emails|join:", " }}</dd>{% endif %}

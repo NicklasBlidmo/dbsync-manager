@@ -47,6 +47,35 @@ def isotime(value, fmt="H:i:s"):
 
 
 @register.filter
+def ago(value):
+    """Relative time for a recent moment: '59 s ago', '3 min ago', '2 h ago',
+    else the local date and time. Empty for None."""
+    from datetime import datetime
+
+    from django.utils import dateformat, timezone
+
+    if not value:
+        return ""
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value)
+        except ValueError:
+            return value
+    if timezone.is_naive(value):
+        value = timezone.make_aware(value, timezone.utc)
+    seconds = (timezone.now() - value).total_seconds()
+    if seconds < 0:
+        seconds = 0
+    if seconds < 60:
+        return f"{int(seconds)} s ago"
+    if seconds < 3600:
+        return f"{int(seconds // 60)} min ago"
+    if seconds < 86400:
+        return f"{int(seconds // 3600)} h ago"
+    return dateformat.format(timezone.localtime(value), "Y-m-d H:i")
+
+
+@register.filter
 def condition_label(key):
     """'db_behind:1-punkter.gpkg' -> 'db_behind (1-punkter.gpkg)'."""
     name, _, rest = str(key).partition(":")

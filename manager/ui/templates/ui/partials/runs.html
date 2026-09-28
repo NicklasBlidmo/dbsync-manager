@@ -1,16 +1,33 @@
 {% load ui_extras %}
-{% if runs %}
+{% if run_groups %}
 <table class="table">
-  <thead><tr><th>Started</th><th>Kind</th><th class="num">Version</th><th>Result</th><th>Detail</th></tr></thead>
+  <thead><tr><th>Started</th><th>Kind</th><th class="num">Version</th><th>Result</th><th>Files</th></tr></thead>
   <tbody>
-  {% for run in runs %}
+  {% for g in run_groups %}
     <tr>
-      <td class="muted nowrap">{{ run.started_at|date:"Y-m-d H:i:s" }}</td>
-      <td>{{ run.kind }}</td>
-      <td class="num">{{ run.checkout_version|version }}</td>
-      <td><span class="badge {% if run.state == 'applied' or run.state == 'ok' %}ok{% elif run.state == 'failed' %}bad{% else %}info{% endif %}"
-            title="{% if run.state == 'checkout only' %}the checkout reached this version; the database has not confirmed it yet{% elif run.state == 'applied' %}the check has seen the database at this version{% endif %}">{{ run.state }}</span></td>
-      <td class="muted">{{ run.detail|truncatechars:120 }}</td>
+      <td class="muted nowrap"><button type="button" class="toggle" aria-expanded="{{ g.expanded|yesno:'true,false' }}"
+            aria-controls="{{ g.key }}" data-key="{{ g.key }}" title="per-file rows"></button>{{ g.started|date:"Y-m-d H:i:s" }}</td>
+      <td>{{ g.kind }}</td>
+      <td class="num">{{ g.version|version }}</td>
+      <td><span class="badge {{ g.state_class }}"
+            title="{% if g.state == 'checkout only' %}the checkout reached this version; the database has not confirmed it yet{% elif g.state == 'applied' %}the check has seen the database at this version{% elif not g.uniform %}the worst result among the files{% endif %}">{{ g.state }}</span></td>
+      <td class="muted">{{ g.files }}</td>
+    </tr>
+    <tr class="detail" id="{{ g.key }}"{% if not g.expanded %} hidden{% endif %}>
+      <td colspan="5">
+        <table class="table">
+          <thead><tr><th>Started</th><th>Result</th><th>Detail</th></tr></thead>
+          <tbody>
+          {% for r in g.rows %}
+            <tr>
+              <td class="muted nowrap">{{ r.run.started_at|date:"H:i:s" }}</td>
+              <td><span class="badge {{ r.state_class }}">{{ r.state }}</span></td>
+              <td class="muted">{{ r.detail|truncatechars:120 }}</td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </td>
     </tr>
   {% endfor %}
   </tbody>

@@ -114,8 +114,18 @@ code { font-family: var(--font-mono); font-size: var(--text-xs); }
 .connections td:first-child { white-space: nowrap; }
 .connections .schemas { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--muted); word-break: break-all; }
 .connections .rows { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.connections .detail > td { background: var(--bg); padding: var(--space-3) var(--space-4) var(--space-3) 2.25rem; font-size: var(--text-sm); }
-.connections .detail:hover > td { background: var(--bg); }
+.table .detail > td { background: var(--bg); padding: var(--space-3) var(--space-4) var(--space-3) 2.25rem; font-size: var(--text-sm); }
+.table .detail:hover > td { background: var(--bg); }
+.table .toggle { all: unset; cursor: pointer; display: inline-grid; place-items: center; width: 1.25rem; height: 1.25rem; margin-right: var(--space-1); color: var(--muted); border-radius: var(--radius-sm); transition: transform .12s; }
+.table .toggle::before { content: "▸"; }
+.table .toggle:hover { color: var(--fg); background: var(--bg); }
+.table .toggle[aria-expanded="true"] { transform: rotate(90deg); }
+
+/* collapsible sections (Events, Hooks): the title is the summary */
+details.section > summary { cursor: pointer; list-style: none; }
+details.section > summary::-webkit-details-marker { display: none; }
+details.section > summary.section-title::before { content: "▸"; display: inline-block; width: 1rem; color: var(--muted); transition: transform .12s; }
+details.section[open] > summary.section-title::before { transform: rotate(90deg); }
 
 /* badges: pill, 600, tinted pair; ok is the palest so "all fine" stays quiet */
 .badge { display: inline-block; padding: 0 var(--space-2); border-radius: var(--radius-pill); font-size: var(--text-xs); font-weight: 600; line-height: 1.25rem; white-space: nowrap; }
@@ -135,8 +145,11 @@ code { font-family: var(--font-mono); font-size: var(--text-xs); }
 .panel.grid { display: grid; }
 .status-bar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin: 0; color: var(--muted); font-size: var(--text-sm); }
 .actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin-top: var(--space-3); padding-bottom: var(--space-4); border-bottom: 1px solid var(--line); }
-/* actions on the badge row (status and operation panels): right-aligned, no rule */
-.status-bar .actions { margin: 0 0 0 auto; padding: 0; border: 0; }
+/* actions under the badge row (status and operation panels): a row of their
+   own with the mock's spacing, the rule under the buttons from .actions */
+.status-bar .actions { flex-basis: 100%; margin: var(--space-3) 0 0; }
+.status-bar .label { color: var(--muted); font-size: var(--text-sm); margin-right: calc(-1 * var(--space-1)); }
+.status-bar .label + .badge { margin-right: var(--space-2); }
 .facts { display: grid; grid-template-columns: max-content 1fr; gap: var(--space-1) var(--space-5); margin: var(--space-4) 0 0; font-size: var(--text-sm); }
 .facts dt { color: var(--muted); }
 .facts dd { margin: 0; }

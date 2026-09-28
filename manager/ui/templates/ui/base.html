@@ -12,7 +12,7 @@
   <a class="brand" href="{% url 'home' %}">dbsync-manager</a>
   <nav>{% with path=request.path %}
     <a href="{% url 'home' %}"{% if path == "/" or path|slice:":10" == "/projects/" or path|slice:":5" == "/add/" %} aria-current="page"{% endif %}>Projects</a>
-    {% if user.is_staff %}<a href="{% url 'admin:index' %}"{% if path|slice:":7" == "/admin/" %} aria-current="page"{% endif %}>Settings (admin)</a>{% endif %}
+    {% if user.is_staff %}<a href="{% url 'admin:index' %}"{% if path|slice:":7" == "/admin/" %} aria-current="page"{% endif %}>Settings</a>{% endif %}
   {% endwith %}</nav>
   {% if user.is_authenticated %}
   <span class="user">{{ user.get_username }}

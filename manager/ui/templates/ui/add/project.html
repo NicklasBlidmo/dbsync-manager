@@ -2,9 +2,10 @@
 {% block title %}Add {{ project }} · dbsync-manager{% endblock %}
 {% block content %}
 <h1 class="page-title">Add sync <span class="muted">step 2 of 3: {{ project }}</span></h1>
-<p class="muted">Server version {% if version %}v{{ version }}{% else %}unknown{% endif %} · account {{ account.name }} has
+<p class="page-subtitle">Server version {% if version %}v{{ version }}{% else %}unknown{% endif %} · account {{ account.name }} has
   {% if permission %}<span class="badge info">{{ permission }}</span>{% else %}<span class="badge bad">no access</span>{% endif %}
-  · target database {{ database.name }}</p>
+  · target database <strong>{{ database.name }}</strong> ({{ database.user }}@{{ database.host }}:{{ database.port }}/{{ database.dbname }})
+  <a class="muted" href="{% url 'add_start' %}">change</a></p>
 
 <form method="post" action="{% url 'add_preview' %}" id="add">
   {% csrf_token %}

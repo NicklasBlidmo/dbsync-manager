@@ -73,8 +73,8 @@ class Database(OwnedModel):
     name = models.CharField(max_length=100, unique=True)
     host = models.CharField(
         max_length=255,
-        help_text="As seen from the manager's container: the server's LAN address or a Docker service name. "
-                  "'localhost' is the container itself.",
+        help_text="As seen from inside the manager container: 'localhost' is the container itself; "
+                  "use the server's LAN address or Docker service name.",
     )
     port = models.PositiveIntegerField(default=5432)
     dbname = models.CharField(max_length=100)

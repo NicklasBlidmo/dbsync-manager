@@ -52,12 +52,21 @@ def _project_rows(qs):
     rows = []
     for project in qs:
         statuses = list(project.statuses.all())
+        server = max((s.server_version or 0 for s in statuses), default=None) or None
+        local = min((s.local_version or 0 for s in statuses), default=None) or None
+        db = min((s.db_version or 0 for s in statuses), default=None) or None
         rows.append({
             "project": project,
             "statuses": statuses,
-            "server_version": max((s.server_version or 0 for s in statuses), default=None) or None,
-            "local_version": min((s.local_version or 0 for s in statuses), default=None) or None,
-            "db_version": min((s.db_version or 0 for s in statuses), default=None) or None,
+            "server_version": server,
+            "local_version": local,
+            "db_version": db,
+            # One Version column: the server's, with a badge only where the
+            # checkout or the database differ (slice 10, item 6).
+            "version_badges": [
+                (label, v) for label, v in (("checkout", local), ("db", db))
+                if v is not None and server is not None and v != server
+            ],
             "last_pull_at": max((s.last_pull_at for s in statuses if s.last_pull_at), default=None),
             "direction": _project_direction(statuses),
             # Failed = the latest check did not succeed (a best-effort note on a
@@ -229,11 +238,18 @@ def _project_context(project):
 def project_detail(request, pk):
     project = get_object_or_404(SyncProject, pk=pk)
     context = _project_context(project)
-    context["events"] = project.events.select_related("user").order_by("-at")[:EVENTS_ON_PAGE]
+    events = list(project.events.select_related("user").order_by("-at")[:EVENTS_ON_PAGE])
+    context["events"] = events
+    context["events_latest"] = events[0].at if events else None
+    # Collapsed by default; open when the newest entry needs attention (slice 10, item 4).
+    context["events_open"] = bool(events) and events[0].level in ("warning", "error")
     context["can_operate"] = request.user.has_perm("registry.change_syncproject")
     context["now_date"] = _today()
     context.update(_log_context(project))
     context.update(_hooks_context(project))
+    hook_runs = context["hook_runs"]
+    context["hooks_latest"] = hook_runs[0].started_at if hook_runs else None
+    context["hooks_open"] = bool(hook_runs) and hook_runs[0].ok is False
     context.update(_runs_context(project))
     return render(request, "ui/project.html", context)
 
@@ -301,22 +317,18 @@ def _hooks_context(project):
 
 
 RUNS_ON_PAGE = 20
+RUN_ROWS_FETCHED = 400   # enough raw rows for 20 groups of a many-file project
 
 
 def _runs_context(project):
     from registry.models import SyncRun
 
-    runs = list(project.runs.exclude(kind=SyncRun.Kind.HOOK).order_by("-started_at")[:RUNS_ON_PAGE])
-    for run in runs:
-        summary = run.summary or {}
-        if run.ok is True:
-            run.state = "ok" if run.kind != "pull" else "applied"
-        elif run.ok is False:
-            run.state = "failed"
-        else:
-            run.state = "checkout only" if run.kind == "pull" else "unknown"
-        run.detail = summary.get("failed") or summary.get("line", "")
-    return {"runs": runs}
+    from .runs import group_runs
+
+    runs = list(project.runs.exclude(kind=SyncRun.Kind.HOOK).order_by("-started_at")[:RUN_ROWS_FETCHED])
+    total = project.connections.count()
+    return {"run_groups": group_runs(runs, window_seconds=max(project.sleep_time, 60), total_connections=total,
+                                     limit=RUNS_ON_PAGE)}
 
 
 @login_required

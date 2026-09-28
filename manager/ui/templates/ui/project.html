@@ -10,33 +10,33 @@
 </div>
 <script>
 (function () {
-  // Per-connection detail rows: the server decides open/closed from the
-  // data (a row with a badge opens); a manual toggle is remembered per
-  // connection in sessionStorage and wins over the server default.
-  var box = document.getElementById("status");
-  function key(id) { return "dbsync-conn-open-" + id; }
+  // Expandable detail rows (connections, pull groups): the server decides
+  // open/closed from the data; a manual toggle is remembered per row key
+  // in sessionStorage, wins over the server default, and survives the
+  // HTMX swaps.
+  function key(button) { return "dbsync-open-" + (button.dataset.key || button.dataset.conn); }
   function setOpen(button, open) {
     var row = document.getElementById(button.getAttribute("aria-controls"));
     if (!row) return;
     row.hidden = !open;
     button.setAttribute("aria-expanded", open ? "true" : "false");
   }
-  function restore() {
-    box.querySelectorAll("button.toggle[data-conn]").forEach(function (button) {
+  function restore(root) {
+    (root || document).querySelectorAll("button.toggle[aria-controls]").forEach(function (button) {
       try {
-        var saved = sessionStorage.getItem(key(button.dataset.conn));
+        var saved = sessionStorage.getItem(key(button));
         if (saved === "1" || saved === "0") setOpen(button, saved === "1");
       } catch (e) { /* storage unavailable: keep the server default */ }
     });
   }
-  box.addEventListener("click", function (event) {
-    var button = event.target.closest && event.target.closest("button.toggle[data-conn]");
+  document.addEventListener("click", function (event) {
+    var button = event.target.closest && event.target.closest("button.toggle[aria-controls]");
     if (!button) return;
     var open = button.getAttribute("aria-expanded") !== "true";
     setOpen(button, open);
-    try { sessionStorage.setItem(key(button.dataset.conn), open ? "1" : "0"); } catch (e) { /* ignore */ }
+    try { sessionStorage.setItem(key(button), open ? "1" : "0"); } catch (e) { /* ignore */ }
   });
-  box.addEventListener("htmx:afterSwap", restore);
+  document.addEventListener("htmx:afterSwap", function (event) { restore(event.target); });
   restore();
 })();
 </script>
@@ -66,31 +66,35 @@
 })();
 </script>
 
-<h2 class="section-title">Pulls and pushes <span class="muted">(last 20 from the log; a pull is "applied" only once the check sees the database at that version, design §6)</span></h2>
+<h2 class="section-title">Pulls and pushes <span class="muted">(last 20 per version; a pull is "applied" only once the check sees the database at that version, design §6)</span></h2>
 <div id="runs" hx-get="{% url 'project_runs' project.pk %}" hx-trigger="every 15s" hx-swap="innerHTML">
   {% include "ui/partials/runs.html" %}
 </div>
 
-<h2 class="section-title">Hooks <span class="muted">(last 10 runs; output is masked and capped, design §8)</span></h2>
-<div id="hooks" hx-get="{% url 'project_hooks' project.pk %}" hx-trigger="every 15s" hx-swap="innerHTML">
-  {% include "ui/partials/hooks.html" %}
-</div>
+<details class="section"{% if hooks_open %} open{% endif %}>
+  <summary class="section-title">Hooks <span class="muted">· {{ hook_runs|length }} run{{ hook_runs|length|pluralize }}{% if hooks_latest %} · latest {{ hooks_latest|date:"H:i:s" }}{% endif %} · output is masked and capped, design §8</span></summary>
+  <div id="hooks" hx-get="{% url 'project_hooks' project.pk %}" hx-trigger="every 15s" hx-swap="innerHTML">
+    {% include "ui/partials/hooks.html" %}
+  </div>
+</details>
 
-<h2 class="section-title">Events <span class="muted">(last 50)</span></h2>
-<table class="table">
-  <thead><tr><th>When</th><th>Level</th><th>Source</th><th>Message</th><th>Condition</th></tr></thead>
-  <tbody>
-  {% for event in events %}
-    <tr>
-      <td class="muted nowrap">{{ event.at|date:"Y-m-d H:i:s" }}</td>
-      <td><span class="badge {{ event.level|badge }}">{{ event.level }}</span></td>
-      <td class="muted">{{ event.source }}{% if event.user %} ({{ event.user.get_username }}){% endif %}</td>
-      <td><pre class="pre-short">{{ event.message }}</pre></td>
-      <td class="muted">{% if event.condition %}{{ event.condition|condition_label }}{% endif %}</td>
-    </tr>
-  {% empty %}
-    <tr><td colspan="5" class="muted">No events yet.</td></tr>
-  {% endfor %}
-  </tbody>
-</table>
+<details class="section"{% if events_open %} open{% endif %}>
+  <summary class="section-title">Events <span class="muted">· {{ events|length }}{% if events_latest %} · latest {{ events_latest|date:"H:i:s" }}{% endif %}</span></summary>
+  <table class="table">
+    <thead><tr><th>When</th><th>Level</th><th>Source</th><th>Message</th><th>Condition</th></tr></thead>
+    <tbody>
+    {% for event in events %}
+      <tr>
+        <td class="muted nowrap">{{ event.at|date:"Y-m-d H:i:s" }}</td>
+        <td><span class="badge {{ event.level|badge }}">{{ event.level }}</span></td>
+        <td class="muted">{{ event.source }}{% if event.user %} ({{ event.user.get_username }}){% endif %}</td>
+        <td><pre class="pre-short">{{ event.message }}</pre></td>
+        <td class="muted">{% if event.condition %}{{ event.condition|condition_label }}{% endif %}</td>
+      </tr>
+    {% empty %}
+      <tr><td colspan="5" class="muted">No events yet.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</details>
 {% endblock %}

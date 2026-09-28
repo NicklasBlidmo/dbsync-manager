@@ -15,6 +15,7 @@
     <select name="health"><option value="">all</option>
       {% for value, label in health_choices %}<option value="{{ value }}" {% if filters.health == value %}selected{% endif %}>{{ label }}</option>{% endfor %}
     </select></label>
+  {% if filters %}<a class="muted" href="{% url 'home' %}">Reset filters</a>{% endif %}
   {% if can_add %}<a class="button primary" href="{% url 'add_start' %}">Add sync</a>{% endif %}
 </form>
 <div id="projects" class="mt-3" hx-get="{% url 'projects_table' %}" hx-include=".filters" hx-trigger="every 10s" hx-swap="innerHTML">

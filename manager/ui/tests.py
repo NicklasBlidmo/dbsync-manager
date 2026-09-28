@@ -49,9 +49,25 @@ class PagesTests(TestCase):
         response = self.client.get(reverse("home"))
         self.assertContains(response, "ak/bonsta")
         self.assertContains(response, "1 alert")
-        for text in ("running", "stopped", "behind", "v11", "v10"):
+        for text in ("running", "stopped", "behind"):
             self.assertContains(response, text)
+        # One Version column: the server's, with a badge where the database differs.
+        self.assertContains(response, "v11")
+        self.assertContains(response, "db v10")
+        self.assertNotContains(response, "checkout v")
         self.assertNotContains(response, "Pause")
+
+    def test_status_bar_uses_labels_not_prefixes(self):
+        self.client.login(username="viewer", password="pw")
+        response = self.client.get(reverse("project", args=[self.project.pk]))
+        for label in ("Desired", "Process", "Health"):
+            self.assertContains(response, f'<span class="label">{label}</span>')
+        self.assertNotContains(response, "desired: ")
+        self.assertNotContains(response, "health: ")
+        self.assertContains(response, "Settings</a>")
+        self.assertNotContains(response, "Settings (admin)")
+        # Events and Hooks are collapsible sections; events open because the newest is a warning? none yet -> closed
+        self.assertContains(response, '<details class="section">', count=2)
 
     def test_home_has_one_primary_action_and_one_current_nav_link(self):
         self.client.login(username="operator", password="pw")
@@ -259,6 +275,7 @@ class WizardViewTests(TestCase):
         self.assertContains(response, 'form="pick" name="project" value="ak/bonsta"')
         response = self.client.get(reverse("add_project"), {"account": self.account.pk, "database": self.database.pk, "project": "ak/bonsta"})
         self.assertContains(response, "step 2 of 3")
+        self.assertContains(response, "ak_dbsync@db:5432/ak")      # the chosen database, visible before Preview
         self.assertContains(response, 'value="bonsta"')                 # default prefix
         self.assertContains(response, "bonsta_s_punkter")
         self.assertContains(response, "bonsta_b_foto")

@@ -1,10 +1,10 @@
 {% load ui_extras %}
 <div class="panel">
   <p class="status-bar">
-    <span class="badge {{ project.desired_state|badge }}">desired: {{ project.desired_state }}</span>
-    <span class="badge {{ project.process_state|badge }}">process: {{ project.process_state }}</span>
-    <span class="badge {{ project.health|badge }}">health: {{ project.get_health_display }}</span>
-    {% if project.health_since %}<span class="muted">since {{ project.health_since|date:"Y-m-d H:i" }}</span>{% endif %}
+    <span class="label">Desired</span><span class="badge {{ project.desired_state|badge }}">{{ project.desired_state }}</span>
+    <span class="label">Process</span><span class="badge {{ project.process_state|badge }}">{{ project.process_state }}</span>
+    <span class="label">Health</span><span class="badge {{ project.health|badge }}">{{ project.get_health_display }}</span>
+    {% if project.health_since %}<span class="muted" title="{{ project.health_since|date:'Y-m-d H:i:s' }}">since {{ project.health_since|ago }}</span>{% endif %}
     {% if project.health == "ok" %}<span class="muted">· no divergence detected (counts, versions); not a content verification</span>{% endif %}
     {% if project.removed_at %}<span class="badge muted">removed {{ project.removed_at|date:"Y-m-d H:i" }}</span>{% endif %}
     {% if can_operate and not project.removed_at %}
@@ -26,7 +26,7 @@
   {% if project.process_reason %}<pre class="pre-short mt-2">{{ project.process_reason }}</pre>{% endif %}
   {% for key, since in active_conditions %}
     <div class="notice {% if 'divergence' in key or 'stranded' in key or 'stuck' in key or 'crashed' in key %}bad{% else %}warn{% endif %}">
-      <strong>{{ key|condition_label }}</strong> <span class="muted">active since {{ since }}</span>
+      <strong>{{ key|condition_label }}</strong> <span class="muted" title="{{ since|isotime:'Y-m-d H:i:s' }}">active since {{ since|ago }}</span>
     </div>
   {% endfor %}
   {% if facts.checked %}
@@ -57,7 +57,7 @@
     <tr class="conn{% if row.attention %} attention{% endif %}" id="conn-{{ row.connection.pk }}">
       <td class="nowrap">
         {% if row.tables %}<button type="button" class="toggle" aria-expanded="{{ row.expanded|yesno:'true,false' }}"
-                aria-controls="detail-{{ row.connection.pk }}" data-conn="{{ row.connection.pk }}" title="per-table counts"></button>{% endif %}
+                aria-controls="detail-{{ row.connection.pk }}" data-conn="{{ row.connection.pk }}" data-key="conn-{{ row.connection.pk }}" title="per-table counts"></button>{% endif %}
         {{ row.connection.sync_file }}
       </td>
       <td class="schemas">{{ row.connection.modified_schema }} / {{ row.connection.base_schema }}</td>

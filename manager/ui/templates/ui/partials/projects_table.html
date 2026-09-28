@@ -3,7 +3,7 @@
   <thead>
     <tr>
       <th>Project</th><th>Desired</th><th>Process</th><th>Health</th><th>Direction</th>
-      <th class="num">Server</th><th class="num">Local</th><th class="num">DB</th><th>Last pull</th><th>Database</th>
+      <th class="num">Version</th><th>Last pull</th><th>Database</th>
     </tr>
   </thead>
   <tbody>
@@ -16,14 +16,13 @@
       <td><span class="badge {{ row.project.health|badge }}">{{ row.project.get_health_display }}</span>
           {% if row.check_error %}<span class="badge bad" title="{{ row.check_error_text }}">check failed</span>{% endif %}</td>
       <td>{% if row.direction %}<span class="badge {{ row.direction|badge }}">{{ row.direction }}</span>{% else %}<span class="muted">–</span>{% endif %}</td>
-      <td class="num">{{ row.server_version|version }}</td>
-      <td class="num">{{ row.local_version|version }}</td>
-      <td class="num">{{ row.db_version|version }}</td>
-      <td>{% if row.last_pull_at %}{{ row.last_pull_at|date:"Y-m-d H:i" }}{% else %}<span class="muted">–</span>{% endif %}</td>
+      <td class="num">{{ row.server_version|version }}
+          {% for label, v in row.version_badges %}<span class="badge warn">{{ label }} v{{ v }}</span>{% endfor %}</td>
+      <td>{% if row.last_pull_at %}<span title="{{ row.last_pull_at|date:'Y-m-d H:i:s' }}">{{ row.last_pull_at|ago }}</span>{% else %}<span class="muted">–</span>{% endif %}</td>
       <td class="muted">{{ row.project.database.name }}</td>
     </tr>
   {% empty %}
-    <tr><td colspan="10" class="muted">No projects{% if filters %} match the filter{% endif %}.</td></tr>
+    <tr><td colspan="8" class="muted">No projects{% if filters %} match the filter{% endif %}.</td></tr>
   {% endfor %}
   </tbody>
 </table>
