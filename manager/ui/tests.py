@@ -53,6 +53,15 @@ class PagesTests(TestCase):
             self.assertContains(response, text)
         self.assertNotContains(response, "Pause")
 
+    def test_home_has_one_primary_action_and_one_current_nav_link(self):
+        self.client.login(username="operator", password="pw")
+        response = self.client.get(reverse("home"))
+        self.assertContains(response, "button primary", count=1)
+        self.assertContains(response, 'aria-current="page"', count=1)
+        response = self.client.get(reverse("project", args=[self.project.pk]))
+        self.assertContains(response, 'aria-current="page"', count=1)
+        self.assertNotContains(response, "button primary")
+
     def test_home_filter(self):
         self.client.login(username="viewer", password="pw")
         response = self.client.get(reverse("projects_table"), {"health": "ok"})

@@ -25,7 +25,7 @@
   </p>
   {% if project.process_reason %}<pre class="pre-short mt-2">{{ project.process_reason }}</pre>{% endif %}
   {% for key, since in active_conditions %}
-    <div class="notice {% if 'divergence' in key or 'stranded' in key or 'stuck' in key or 'crashed' in key %}bad{% endif %}">
+    <div class="notice {% if 'divergence' in key or 'stranded' in key or 'stuck' in key or 'crashed' in key %}bad{% else %}warn{% endif %}">
       <strong>{{ key|condition_label }}</strong> <span class="muted">active since {{ since }}</span>
     </div>
   {% endfor %}
