@@ -302,6 +302,17 @@ the crash event and `process_reason`, which is how a start-up failure
 are rotated by copy-and-truncate, since db-sync appends and never reopens
 its log.
 
+Each daemon runs with `TMPDIR=<work dir>/tmp`, emptied at every start, and
+two starts in one tick are at least a second apart (2026-09-28b). db-sync
+and geodiff put their temporary copies in the process's temp directory
+under names that collide between concurrent daemons: two fixed names
+(`dbsync-changeset-details`, `dbsync-changeset-summary`) and geodiff's
+`geodiff_<6 chars>` from an unseeded `rand()`, so every process draws the
+same sequence. In a shared `/tmp` two daemons in step truncate and unlink
+each other's files (`SQLITE_READONLY_DBMOVED`) and crash together, and the
+restart backoff keeps them in step; a random jitter on the backoff breaks
+that too.
+
 ### State model
 
 A project has three independent state fields, each with exactly one writer:

@@ -13,6 +13,7 @@ mistaken for our daemon.
 """
 
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -75,7 +76,36 @@ def daemon_command(daemon_dir, config_path, log_path) -> list[str]:
     ]
 
 
-def spawn(command, cwd, stderr_path, pidfile, config_path) -> Child:
+TMP_SUBDIR = "tmp"
+
+
+def private_tmpdir(work_dir) -> Path:
+    """An empty, private temp directory for one daemon (or hook) under its work dir.
+
+    geodiff names its temporary copies with a time-seeded pseudo-random
+    string, so two daemons started in the same second pick the same names
+    in a shared /tmp and destroy each other's files (review note
+    2026-09-28b). A directory per project makes equal names harmless. It is
+    emptied on every start: a crashed daemon leaves copies behind.
+    """
+    tmp = Path(work_dir) / TMP_SUBDIR
+    tmp.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(tmp, 0o700)
+    except OSError:
+        pass
+    for entry in tmp.iterdir():
+        try:
+            if entry.is_dir() and not entry.is_symlink():
+                shutil.rmtree(entry)
+            else:
+                entry.unlink()
+        except OSError:
+            pass
+    return tmp
+
+
+def spawn(command, cwd, stderr_path, pidfile, config_path, env=None) -> Child:
     """Start `command` detached in its own session, stderr appended to a file.
 
     stdout is discarded: db-sync prints only a timestamp per cycle there.
@@ -88,6 +118,7 @@ def spawn(command, cwd, stderr_path, pidfile, config_path) -> Child:
         popen = subprocess.Popen(
             command,
             cwd=str(cwd),
+            env=env,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=stderr,

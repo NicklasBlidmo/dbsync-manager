@@ -102,7 +102,10 @@ def hook_environment(project, connections, event_kind, *, work_dir, pgpass_path,
     """
     database = database or project.database
     env = dict(os.environ)
+    tmpdir = str(Path(work_dir) / "tmp")
     env.update({
+        # Same reason as for the daemon: a private temp dir per project.
+        "TMPDIR": tmpdir, "TMP": tmpdir, "TEMP": tmpdir,
         "DBSYNC_PROJECT": project.mergin_project,
         "DBSYNC_PROJECT_ID": str(project.pk),
         "DBSYNC_SCHEMA_PREFIX": project.schema_prefix,
@@ -222,6 +225,7 @@ def run_hook(project, hook, event_kind, *, connections=None, db_version=None, pr
         pass
 
     work_dir.mkdir(parents=True, exist_ok=True)
+    (work_dir / "tmp").mkdir(exist_ok=True)
     try:
         fd = os.open(pgpass_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as handle:

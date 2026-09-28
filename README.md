@@ -178,5 +178,6 @@ docker compose --profile test run --rm test
 /data/projects/<id>/dbsync.log         db-sync's --log-file (INFO), rotated
 /data/projects/<id>/dbsync.stderr.log  everything db-sync writes to stderr, rotated
 /data/projects/<id>/dbsync.pid         pid + config path, used to re-attach
+/data/projects/<id>/tmp/               TMPDIR of the daemon and hooks, emptied on start
 /data/projects/<id>/work/<project>/<modified schema>/   the checkout (#163 patch)
 ```

@@ -14,6 +14,8 @@ One writer per state field (§6 State model): this module writes
 """
 
 import logging
+import os
+import random
 import signal
 import threading
 import time
@@ -43,6 +45,8 @@ LOCK_KEY = 0x6462_7379_6E63_7376
 
 BACKOFF_FIRST = 30
 BACKOFF_MAX = 600
+BACKOFF_JITTER = 5           # seconds of random extra delay, so crashed daemons do not restart in step
+SPAWN_STAGGER = 1.1          # seconds between two daemon starts (geodiff seeds its temp names by the second)
 STABLE_UPTIME = 600          # a run this long resets the crash counter
 CRASH_ALERT_AFTER = 3        # consecutive crashes before condition process_crashed
 STOP_GRACE = 60              # seconds between SIGTERM and SIGKILL
@@ -89,6 +93,7 @@ class Supervisor:
         self.open_operations: dict[int, Operation] = {}
         self.io = SupervisorIO(self)
         self._last_prune_day = None
+        self._last_spawn_at: float | None = None
 
     # --- lifecycle -----------------------------------------------------------
 
@@ -293,6 +298,15 @@ class Supervisor:
 
     # --- step 1: start -------------------------------------------------------
 
+    def _stagger(self):
+        """At least SPAWN_STAGGER seconds between two daemon starts."""
+        now = time.monotonic()
+        if self._last_spawn_at is not None:
+            wait = SPAWN_STAGGER - (now - self._last_spawn_at)
+            if wait > 0:
+                time.sleep(wait)
+        self._last_spawn_at = time.monotonic()
+
     @staticmethod
     def _still_wanted(project) -> bool:
         """Re-read the registry right before a start: the in-memory project
@@ -337,7 +351,13 @@ class Supervisor:
 
         write_config(paths["config"], text)
         command = processes.daemon_command(settings.DBSYNC_DAEMON_DIR, paths["config"], paths["log"])
-        child = processes.spawn(command, paths["work_dir"], paths["stderr"], paths["pidfile"], paths["config"])
+        # Own temp dir per daemon and a pause between starts: two daemons
+        # started in the same second otherwise share geodiff's temp file
+        # names in /tmp and crash each other (review note 2026-09-28b).
+        tmpdir = processes.private_tmpdir(paths["work_dir"])
+        env = dict(os.environ, TMPDIR=str(tmpdir), TMP=str(tmpdir), TEMP=str(tmpdir))
+        self._stagger()
+        child = processes.spawn(command, paths["work_dir"], paths["stderr"], paths["pidfile"], paths["config"], env=env)
         rt.child = child
         rt.stopping_since = None
         rt.last_start_at = now
@@ -530,7 +550,8 @@ class Supervisor:
             rt.crashes = 0
         rt.crashes += 1
         delay = backoff_delay(rt.crashes)
-        rt.next_start_at = now + delay
+        # Jitter breaks the lock-step of daemons that crashed together.
+        rt.next_start_at = now + delay + random.uniform(0, BACKOFF_JITTER)
         retry_at = (timezone.now() + timedelta(seconds=delay)).strftime("%H:%M:%S")
         code_text = f"exit code {code}" if code is not None else "exit (adopted process, code unknown)"
         last_lines = tail(paths["stderr"], lines=15)

@@ -60,6 +60,12 @@ Invariants learned the hard way:
 - db-sync's own init adopts existing schemas whose base comment names the
   project (downloads `db_version`, compares base with the GeoPackage). The
   manager's `add` relies on that; it never re-implements init.
+- Two daemons started within the same second write geodiff temp files with
+  the same "random" names in `/tmp` and kill each other (SQLITE_READONLY_DBMOVED,
+  seen 2026-09-28 after a container restart with two projects). Every daemon
+  gets its own `TMPDIR` under its project directory, and starts in one tick
+  are staggered. A restart loop that keeps two daemons in step never
+  resolves on its own.
 
 Working agreements:
 
