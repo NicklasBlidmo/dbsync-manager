@@ -95,17 +95,28 @@ PostGIS server and point `DATABASE_URL` at it; from inside the container
 that is the server's LAN address or a shared Docker network, never
 `localhost`.
 
-With the bundled PostGIS, `docker/postgis-init/10-manager.sh` runs once
-when the data volume is created and makes the registry role
-`dbsync_manager` (password `MANAGER_DB_PASSWORD` from `.env`) owning the
-schema `dbsync_manager`, so the registry never runs as the `postgres`
-superuser; `.env.example`'s `DATABASE_URL` already points at that role.
-Sync roles for projects are created the same way by hand:
+With the bundled PostGIS, `docker/postgis-init/20-manager.sh` runs once,
+when the data volume is created, and makes the `postgis` extension, the
+registry role `dbsync_manager` (password `MANAGER_DB_PASSWORD` from
+`.env`) owning the schema `dbsync_manager`, so the registry never runs as
+the `postgres` superuser, and the sync role `dbsync` (password
+`SYNC_DB_PASSWORD`) with `CREATE` on the database. `.env.example`'s
+`DATABASE_URL` already points at the registry role, and the first
+Settings → Databases row is host `postgis`, port `5432`, database `gis`,
+user `dbsync` with that password.
+
+The init scripts run only while the data volume is empty. An existing
+volume (a start before the script existed, or a failed first start that
+was not followed by `docker compose --profile postgis down -v`) keeps what
+it has; add the extension and roles by hand instead:
 
 ```sh
+docker compose exec postgis psql -U postgres -d gis -c "CREATE EXTENSION IF NOT EXISTS postgis;"
 docker compose exec postgis psql -U postgres -d gis -c \
   "CREATE ROLE dbsync LOGIN PASSWORD '...'; GRANT CREATE ON DATABASE gis TO dbsync;"
 ```
+
+Further sync roles, one per project or team, are created the same way.
 
 The role in `DATABASE_URL` owns the `dbsync_manager` schema and nothing
 else; it is not the role syncs run as. Either give it `CREATE` on the

@@ -46,14 +46,18 @@ services:
       # use their own server. The image itself refuses an empty password.
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
       POSTGRES_DB: ${POSTGRES_DB:-gis}
-      # Registry role created by docker/postgis-init/10-manager.sh on the
-      # first start; DATABASE_URL in .env uses the same password.
+      # Roles created by docker/postgis-init/20-manager.sh when the data
+      # volume is first created: the registry role (DATABASE_URL in .env uses
+      # the same password) and the sync role dbsync for the first project.
       MANAGER_DB_PASSWORD: ${MANAGER_DB_PASSWORD:-}
+      SYNC_DB_PASSWORD: ${SYNC_DB_PASSWORD:-}
       # ICU collation so sorting is locale-correct regardless of the host
       POSTGRES_INITDB_ARGS: "--locale-provider=icu --icu-locale=sv-SE --encoding=UTF8"
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ./docker/postgis-init:/docker-entrypoint-initdb.d:ro
+      # One file, not the directory: a directory mount masks the image's own
+      # 10_postgis.sh and the postgis extension is never created (2026-09-28).
+      - ./docker/postgis-init/20-manager.sh:/docker-entrypoint-initdb.d/20-manager.sh:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-gis}"]
       interval: 10s

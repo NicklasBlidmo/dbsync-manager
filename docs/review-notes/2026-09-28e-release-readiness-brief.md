@@ -167,3 +167,16 @@ decision for Nicklas after the clean-room install passes.
 | C5 | Development section: db tests need Docker, CLAUDE.md invariants incl. the Windows note |
 | C6 | `CHANGELOG.md` with the v1.0.0 entry; tag `v1.0.0` on this commit |
 | D | The clean-room install remains for gis-ubuntu; README gaps it finds go into the next review note |
+
+Clean-room findings, same day: (1) `add_names` was a GET and the query
+string passed gunicorn's request-line limit at 18 GeoPackages, so the
+names table stopped refreshing (now a POST); (2) the db-tagged suite
+found `django.utils.timezone.utc`, gone in Django 5, in the `isotime`
+and `ago` filters (every project page with a naive log time gave 500),
+plus a test that assumed UTC as the local zone; (3) the C4 script was
+mounted as a directory over `/docker-entrypoint-initdb.d`, which masked
+the image's `10_postgis.sh`: no `postgis` extension in `gis`, db-sync
+failed with "Cannot find or activate postgis extension". Now
+`20-manager.sh`, mounted as one file, creating the extension and the
+sync role `dbsync` (`SYNC_DB_PASSWORD`) as well. The README says the init
+scripts run only on an empty data volume.

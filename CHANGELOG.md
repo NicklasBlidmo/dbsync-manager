@@ -11,6 +11,13 @@
   `datetime.timezone.utc` and have tests without a database.
 - Tests: the relative-time test asserted UTC as the local zone and failed
   when the test container had `TZ` set; it now pins `TIME_ZONE`.
+- Bundled PostGIS: the init script was mounted as a directory over
+  `/docker-entrypoint-initdb.d`, which masked the image's own
+  `10_postgis.sh`, so the `postgis` extension was never created and
+  db-sync failed with "Cannot find or activate postgis extension"
+  (clean-room install). The script is now `20-manager.sh`, mounted as a
+  single file, creates the extension itself, and also creates the sync
+  role `dbsync` from `SYNC_DB_PASSWORD` for the first database row.
 
 ## v1.0.0 (2026-09-28)
 
