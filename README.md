@@ -43,8 +43,12 @@ sh tools/setup.sh
 
 Every answer can be given as an environment variable instead
 (`SETUP_PROFILE=postgis SETUP_HTTP_PORT=8091 …`, listed at the top of the
-script), which is how a repeatable install is scripted. By hand, the same
-steps are:
+script), which is how a repeatable install is scripted. If it stops, fix
+what it reports and run it again: it continues where it stopped, and
+prints the remaining commands in case you prefer to finish by hand. The
+Compose project is named after the directory, and a name another
+directory already uses is refused, so a second installation on the same
+host never replaces the first. By hand, the same steps are:
 
 1. `cp .env.example .env && chmod 600 .env`
 2. Check that the port is free before building, because a collision
@@ -55,7 +59,10 @@ steps are:
    (its own line and inside `DATABASE_URL`), `SYNC_DB_PASSWORD`,
    `HTTP_PORT`, `ALLOWED_HOSTS` and `DBSYNC_BASE_URL`. With an existing
    PostGIS server, set `DATABASE_URL`, `HTTP_PORT`, `ALLOWED_HOSTS` and
-   `DBSYNC_BASE_URL`; the `POSTGRES_*` and `SYNC_*` lines are unused.
+   `DBSYNC_BASE_URL`; the `POSTGRES_*` and `SYNC_*` lines are unused. In
+   `DATABASE_URL=postgres://role:password@host:5432/db` the `postgres://`
+   part is the protocol and never changes; the server's address goes after
+   the `@`, and the password is letters and digits.
 4. `python3 manager/generate_keys.py --write .env` fills the two key lines
    in place (no Python on the host: see below).
 5. `docker compose build && docker compose up -d`

@@ -16,7 +16,16 @@
   `SYNC_DB_ROLE` (default `dbsync_sync`) from `SYNC_DB_PASSWORD`; the
   README lists the first Database row as a table.
 - `tools/setup.sh`: one-command install on a Linux host with Docker,
-  interactive or driven by `SETUP_*` variables.
+  interactive or driven by `SETUP_*` variables. Second walk (2026-09-29):
+  the project name defaults to the directory name and a name another
+  directory already uses is refused (a fixed default had replaced the
+  production containers); passwords are letters, digits, `-` and `_`;
+  every step is skipped when already done, so a stopped run is resumed by
+  running the script again; the summary names the project, port and
+  directory.
+- Preflight: a `DATABASE_URL` whose password contains `? / : # @` is
+  named as such instead of "needs a host and a database"; `.env.example`
+  and the README say that `postgres://` is the protocol.
 - `.env.example` opens with the exact lines for each case; the README's
   edit step is prose, not a comment in a code block; the port is checked
   before the build.

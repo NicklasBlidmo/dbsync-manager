@@ -152,8 +152,11 @@ change to the supervisor, part 2 of the project.
 
 On gis-ubuntu, next to the production instance, from a fresh clone. The
 project name goes into `.env` as `COMPOSE_PROJECT_NAME`, so no `-p` on
-later commands run from that directory. Answer nothing the README does
-not say; every step that needs more is a README bug for the review note.
+later commands run from that directory. Since 12b it defaults to the
+directory name (`dbsync-fresh` here) and a name that already runs
+elsewhere is refused, so `SETUP_PROJECT_NAME` is optional. Answer nothing
+the README does not say; every step that needs more is a README bug for
+the review note.
 
 ```sh
 git clone <repo> /tmp/dbsync-fresh && cd /tmp/dbsync-fresh

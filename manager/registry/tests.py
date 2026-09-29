@@ -132,6 +132,16 @@ class PreflightEnvironmentTests(SimpleTestCase):
         (problem,) = self.problems(DATABASE_URL="DATABASE_URL=postgres://r:p@h/db")
         self.assertIn("pasted into the value", problem)
 
+    def test_password_that_breaks_the_url_is_named(self):
+        # "!?" at the start of a generated password: ? begins the query string
+        # and the URL parses without a host (clean-room walk, 2026-09-29).
+        (problem,) = self.problems(DATABASE_URL="postgres://dbsync_manager:!?abc123@postgis:5432/gis")
+        self.assertIn("password in DATABASE_URL contains characters", problem)
+        (problem,) = self.problems(DATABASE_URL="postgres://dbsync_manager:pw@postgis:5432")
+        self.assertIn("needs a host and a database", problem)
+        self.assertIn("host goes after the @", problem)
+        self.assertEqual(self.problems(DATABASE_URL="postgres://r:a-b_c@h:5432/db"), [])
+
     def test_localhost_is_explained_only_when_the_connection_fails(self):
         # Valid with network_mode: host, so not a configuration error.
         self.assertEqual(self.problems(DATABASE_URL="postgres://r:p@localhost:5432/db"), [])

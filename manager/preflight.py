@@ -53,7 +53,22 @@ def check_environment(env):
             if parts.scheme not in ("postgres", "postgresql", "pgsql", "postgis"):
                 problems.append(f"DATABASE_URL must start with postgres://, got {parts.scheme or 'nothing'}://")
             elif not parts.hostname or not parts.path.strip("/"):
-                problems.append("DATABASE_URL needs a host and a database: postgres://role:password@host:5432/dbname")
+                # A password with ? / : # or @ ends the userinfo early, so the
+                # URL parses with no host (a generated "!?..." password,
+                # 2026-09-29). Name that cause before the generic shape.
+                rest = url.split("://", 1)[1]
+                userinfo = rest.rsplit("@", 1)[0] if "@" in rest else ""
+                password = userinfo.split(":", 1)[1] if ":" in userinfo else ""
+                if any(ch in password for ch in "?/:#@"):
+                    problems.append(
+                        "the password in DATABASE_URL contains characters that are not allowed there "
+                        "(? / : # @); use letters and digits or percent-encode it"
+                    )
+                else:
+                    problems.append(
+                        "DATABASE_URL needs a host and a database: postgres://role:password@host:5432/dbname "
+                        "(postgres:// is the protocol and never changes; the host goes after the @)"
+                    )
 
     tz = env.get("TZ", "").strip()
     if tz:
