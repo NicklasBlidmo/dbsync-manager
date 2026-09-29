@@ -31,9 +31,9 @@ import shutil
 
 from registry import events
 from registry.crypto import SecretError
-from registry.models import Event, Operation, SyncConnection, SyncProject, SyncRun, SyncStatus
+from registry.models import Event, Hook, Operation, SyncConnection, SyncProject, SyncRun, SyncStatus
 
-from . import check, conditions, dbinspect, hooks, housekeeping, logtail, operations, processes
+from . import alerts, check, conditions, dbinspect, hooks, housekeeping, logtail, operations, processes, scheduling
 from .config_render import ConfigRenderError, render_config, write_config
 from .logs import rotate_if_needed, tail
 
@@ -79,6 +79,9 @@ class Runtime:
     stuck_restart_at: float | None = None
     last_post_pull_version: int | None = None
     tail: logtail.TailState | None = None   # log position and error de-duplication
+    # A project hook running in a worker thread (slice 13); the tick reaps it.
+    hook_job: hooks.HookJob | None = None
+    hook_job_kind: str = ""                 # "post_init", "post_pull" or "manual:<kind>"
 
 
 class Supervisor:
@@ -91,6 +94,8 @@ class Supervisor:
         self._lock_held = False
         self.runtimes: dict[int, Runtime] = {}
         self.open_operations: dict[int, Operation] = {}
+        self.scheduled_jobs: dict[int, hooks.HookJob] = {}        # hook id -> running scheduled hook
+        self.operation_hook_jobs: dict[int, hooks.HookJob] = {}   # project id -> running pre_remove hook
         self.io = SupervisorIO(self)
         self._last_prune_day = None
         self._last_spawn_at: float | None = None
@@ -133,6 +138,7 @@ class Supervisor:
         self.install_signal_handlers()
         self.ensure_lock()
         self.adopt_orphans()
+        hooks.mark_orphaned_runs()
         log.info("supervisor running, tick every %ss", self.tick_seconds)
         while not self._stop_requested.is_set():
             try:
@@ -155,6 +161,11 @@ class Supervisor:
         survivors = processes.wait_for_exit([rt.child for _, rt in live], SHUTDOWN_GRACE)
         for child in survivors:
             child.kill()
+        # Hooks got SIGTERM in _on_signal and SIGKILL after INTERRUPT_KILL_AFTER;
+        # wait for their threads so the runs are recorded as interrupted.
+        still = hooks.wait_for_jobs(hooks.INTERRUPT_KILL_AFTER + 5)
+        if still:
+            log.warning("%d hook job(s) still running at shutdown", still)
         try:
             for project_id, rt in live:
                 SyncProject.objects.filter(pk=project_id).update(
@@ -247,6 +258,13 @@ class Supervisor:
             except Exception:  # noqa: BLE001 - one project must not stall the others
                 log.exception("reconcile failed for %s", project)
 
+        try:
+            self._run_scheduled_hooks()
+        except DatabaseError:
+            raise
+        except Exception:  # noqa: BLE001 - a bad hook row must not stall the projects
+            log.exception("scheduled hooks failed")
+
         running = sum(1 for rt in self.runtimes.values() if rt.child and rt.child.alive)
         log.info("tick: %d projects, %d daemons running", len(projects), running)
 
@@ -261,6 +279,11 @@ class Supervisor:
 
         if rt.child is not None and not rt.child.alive:
             self._handle_exit(project, rt, now)
+
+        if rt.hook_job is not None and rt.hook_job.done:
+            self._finish_hook_job(project, rt)
+            if rt.block_after_exit:
+                return   # the daemon is being stopped; _handle_exit records blocked next tick
 
         operation = self.open_operations.get(project.pk)
         if operation is not None:
@@ -393,6 +416,8 @@ class Supervisor:
                 log.info("rotated %s for %s", paths[name].name, project)
 
         if project.process_state == PS.INITIALIZING:
+            if rt.hook_job is not None:
+                return   # post_init running in its worker; _finish_hook_job takes over
             state, reason = self._initial_state(project)
             if state == PS.RUNNING:
                 events.info(project, "initialised: every base schema has db-sync's comment")
@@ -407,30 +432,53 @@ class Supervisor:
     # --- step 4: post_init hook (§6, §8) --------------------------------------
 
     def _after_init(self, project, rt):
-        """Every base schema exists: run post_init if configured, then running."""
+        """Every base schema exists: start post_init if configured, else running.
+
+        The hook runs in a worker thread (slice 13); _finish_hook_job applies
+        its result on a later tick, so a long hook never stalls the loop.
+        """
         hook = project.post_init_hook
         if hook is None or project.post_init_ok_at is not None:
             self._set_state(project, PS.RUNNING, "")
             return
+        if rt.hook_job is not None:
+            return   # a hook of this project is running; its result is applied when it ends
         self._set_state(project, PS.INITIALIZING, f"running post_init hook '{hook.name}'")
-        _, result = hooks.run_hook(project, hook, "post_init", db_version=self._project_db_version(project))
-        if result.ok:
-            self._mark_post_init_ok(project)
-            self._set_state(project, PS.RUNNING, "")
-            return
-        if result.interrupted:
-            # Shutdown, not a hook failure: stay initializing; the next
-            # supervisor runs the hook again through _observe.
-            self._set_state(project, PS.INITIALIZING, "post_init hook interrupted by supervisor shutdown; re-run on restart")
-            return
-        # A sync without its grants, views and validation is worse than one
-        # that waits (§8): stop the child; _handle_exit records blocked.
-        why = "timed out" if result.timed_out else f"exit code {result.exit_code}"
-        rt.block_after_exit = (
-            f"post_init hook '{hook.name}' failed ({why}); fix it and use 'Run hook now', or re-initialise"
-        )
-        if rt.child is not None:
-            rt.child.terminate()
+        rt.hook_job = hooks.start_job(f"{project.pk}:post_init", hooks.run_hook, project, hook, "post_init",
+                                      db_version=self._project_db_version(project))
+        rt.hook_job_kind = "post_init"
+
+    def _finish_hook_job(self, project, rt):
+        """Apply the result of a project hook that ended in its worker thread."""
+        job, rt.hook_job = rt.hook_job, None
+        kind, rt.hook_job_kind = rt.hook_job_kind, ""
+        result = job.result
+        if kind == "post_init":
+            hook = project.post_init_hook
+            name = hook.name if hook is not None else "?"
+            if result.ok:
+                self._mark_post_init_ok(project)
+                if project.process_state == PS.INITIALIZING and rt.child is not None and rt.child.alive:
+                    self._set_state(project, PS.RUNNING, "")
+                return
+            if result.interrupted:
+                # Shutdown, not a hook failure: stay initializing; the next
+                # supervisor runs the hook again through _observe.
+                self._set_state(project, PS.INITIALIZING, "post_init hook interrupted by supervisor shutdown; re-run on restart")
+                return
+            # A sync without its grants, views and validation is worse than one
+            # that waits (§8): stop the child; _handle_exit records blocked.
+            reason = (f"post_init hook '{name}' failed ({hooks.failure_reason(result)}); "
+                      "fix it and use 'Run hook now', or re-initialise")
+            if rt.child is not None and rt.child.alive:
+                rt.block_after_exit = reason
+                rt.child.terminate()
+            else:
+                self._set_state(project, PS.BLOCKED, reason)
+        elif kind == "manual:post_init":
+            if result.ok and project.post_init_ok_at is None:
+                self._mark_post_init_ok(project)
+                # A blocked project starts on the next tick; nothing else to do.
 
     @staticmethod
     def _mark_post_init_ok(project):
@@ -445,7 +493,10 @@ class Supervisor:
         return min(versions) if versions else None
 
     def _run_requested_hooks(self, project, rt):
-        """'Run hook now' requests from the UI: sync_run rows with status requested."""
+        """'Run hook now' requests from the UI: sync_run rows with status
+        requested, started one at a time in a worker thread."""
+        if rt.hook_job is not None:
+            return
         for run in hooks.pending_requests(project):
             kind = (run.summary or {}).get("hook_kind", "")
             hook = getattr(project, f"{kind}_hook", None) if kind in ("post_init", "pre_remove", "post_pull") else None
@@ -457,13 +508,12 @@ class Supervisor:
                 continue
             db_version = self._project_db_version(project)
             prev = rt.last_post_pull_version if kind == "post_pull" else None
-            _, result = hooks.run_hook(
-                project, hook, kind, db_version=db_version, prev_db_version=prev,
-                requested_by=(run.summary or {}).get("requested_by"), run=run, trigger="manual",
+            rt.hook_job = hooks.start_job(
+                f"{project.pk}:manual:{kind}", hooks.run_hook, project, hook, kind, db_version=db_version,
+                prev_db_version=prev, requested_by=(run.summary or {}).get("requested_by"), run=run, trigger="manual",
             )
-            if kind == "post_init" and result.ok and project.post_init_ok_at is None:
-                self._mark_post_init_ok(project)
-                # A blocked project starts on the next tick; nothing else to do.
+            rt.hook_job_kind = f"manual:{kind}"
+            return
 
     # --- step 6: post_pull hook (§6, §8) --------------------------------------
 
@@ -483,9 +533,62 @@ class Supervisor:
             rt.last_post_pull_version = last if last is not None else db_version
             return
         if db_version > rt.last_post_pull_version:
+            if rt.hook_job is not None:
+                return   # another hook of this project is running; try again at the next check
             prev = rt.last_post_pull_version
             rt.last_post_pull_version = db_version
-            hooks.run_hook(project, hook, "post_pull", db_version=db_version, prev_db_version=prev)
+            rt.hook_job = hooks.start_job(f"{project.pk}:post_pull", hooks.run_hook, project, hook, "post_pull",
+                                          db_version=db_version, prev_db_version=prev)
+            rt.hook_job_kind = "post_pull"
+
+    # --- scheduled hooks (slice 13, design §8) ----------------------------------
+
+    def _run_scheduled_hooks(self):
+        now_local = timezone.localtime()
+        for hook in Hook.objects.filter(kind=Hook.Kind.SCHEDULED).select_related("database"):
+            self._tick_scheduled_hook(hook, now_local)
+
+    def _tick_scheduled_hook(self, hook, now_local):
+        """Reap a finished run, then start one when due or requested; never two at once."""
+        job = self.scheduled_jobs.get(hook.pk)
+        if job is not None:
+            if not job.done:
+                return
+            self.scheduled_jobs.pop(hook.pk, None)
+            self._finish_scheduled(hook, job)
+        request = hooks.pending_scheduled_request(hook)
+        due = bool(hook.enabled) and scheduling.is_due(hook.run_at, hook.last_started_at, now_local)
+        if request is None and not due:
+            return
+        if hook.last_status == "running":
+            log.warning("scheduled hook '%s' is marked running elsewhere; not starting a second instance", hook.name)
+            return
+        now = timezone.now()
+        fields = {"last_status": "running"}
+        if due:
+            fields["last_started_at"] = now   # a manual run does not count as today's scheduled run
+        Hook.objects.filter(pk=hook.pk).update(**fields)
+        previous = hook.last_status
+        hook.last_status = "running"
+        if due:
+            hook.last_started_at = now
+        requested_by = (request.summary or {}).get("requested_by") if request is not None else None
+        job = hooks.start_job(f"scheduled:{hook.pk}", hooks.run_scheduled, hook, run=request, requested_by=requested_by)
+        job.previous_status = previous
+        self.scheduled_jobs[hook.pk] = job
+        log.info("scheduled hook '%s' started (%s)", hook.name,
+                 "requested" if request is not None else f"due at {hook.run_at:%H:%M}")
+
+    def _finish_scheduled(self, hook, job):
+        result = job.result
+        status = "interrupted" if result.interrupted else ("ok" if result.ok else "failed")
+        Hook.objects.filter(pk=hook.pk).update(last_finished_at=timezone.now(), last_status=status)
+        hook.last_status = status
+        if result.interrupted:
+            return
+        change = scheduling.transition(job.previous_status, result.ok)
+        if change:
+            alerts.notify_hook(hook, change, result, job.run)
 
     # --- log history (§6 classification) ---------------------------------------
 
@@ -660,21 +763,30 @@ class SupervisorIO:
         return operations.Wait(f"waiting for pid {child.pid} to exit")
 
     def pre_remove_hook(self, operation):
+        """Start the hook in a worker thread and wait across ticks (slice 13)."""
         project = operation.project
         hook = project.pre_remove_hook
         if hook is None:
             return "no pre_remove hook configured"
-        run, result = hooks.run_hook(project, hook, "pre_remove", db_version=self.sup._project_db_version(project),
-                                     trigger="auto")
+        job = self.sup.operation_hook_jobs.get(project.pk)
+        if job is None:
+            job = hooks.start_job(f"{project.pk}:pre_remove", hooks.run_hook, project, hook, "pre_remove",
+                                  db_version=self.sup._project_db_version(project), trigger="auto")
+            self.sup.operation_hook_jobs[project.pk] = job
+            return operations.Wait(f"pre_remove hook '{hook.name}' started")
+        if not job.done:
+            return operations.Wait(f"pre_remove hook '{hook.name}' running")
+        self.sup.operation_hook_jobs.pop(project.pk, None)
+        run, result = job.run, job.result
+        run_id = run.pk if run is not None else "?"
         if result.interrupted:
-            raise operations.Interrupted(f"pre_remove hook '{hook.name}' was stopped by supervisor shutdown (run {run.pk})")
+            raise operations.Interrupted(f"pre_remove hook '{hook.name}' was stopped by supervisor shutdown (run {run_id})")
         if not result.ok:
-            why = "timed out" if result.timed_out else f"exit code {result.exit_code}"
             raise operations.StepFailed(
-                f"pre_remove hook '{hook.name}' failed ({why}); nothing has been dropped. "
-                f"Fix the hook and retry, or cancel (run {run.pk})"
+                f"pre_remove hook '{hook.name}' failed ({hooks.failure_reason(result)}); nothing has been dropped. "
+                f"Fix the hook and retry, or cancel (run {run_id})"
             )
-        return f"hook '{hook.name}' ok in {result.duration_s}s (run {run.pk})"
+        return f"hook '{hook.name}' ok in {result.duration_s}s (run {run_id})"
 
     def drop_schemas(self, operation):
         project = operation.project

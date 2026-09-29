@@ -193,6 +193,21 @@ environment (design §8). `psql` and `ogr2ogr` are in the image. A hook that nee
 (views, grants, `pg_dump`) gets its own "run as" database connection in
 the admin; `DBSYNC_SYNC_ROLE` tells the script which role to grant to.
 
+Hooks run in worker threads: a long hook never stalls the supervisor,
+and one that is still running when the container stops gets SIGTERM,
+then SIGKILL after 10 s, and shows as `interrupted`.
+
+**Scheduled hooks** (kind `scheduled`) belong to the installation rather
+than to a project and run once a day at `run_at` (in `TZ`) as their own
+"run as" connection, with their own alert recipients: one mail when a
+run fails, one when the next run succeeds. They appear in the
+**Scheduled** section of the Projects page with a "Run now" button and a
+history. A nightly `pg_dump` is the first use; [docs/backup.md](docs/backup.md)
+has the hook verbatim. `pg_dump` in the image must not be older than the
+server: check `docker compose exec manager pg_dump --version`, and if
+the server is newer set `PG_CLIENT_MAJOR=<server major>` in `.env` and
+rebuild, which installs that client from apt.postgresql.org.
+
 ### E-mail
 
 Alerts go out through whatever `SMTP_*` in `.env` points at. With

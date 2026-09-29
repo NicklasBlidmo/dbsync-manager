@@ -13,14 +13,79 @@ What exists, where it lives, and what losing it means (design §10):
 ## Routine
 
 1. **Nightly dump of the whole database** that holds the registry and the
-   synced schemas, with `tools/backup.sh`. One dump gives one consistent
-   snapshot of registry and data together, which a schema-only dump does
-   not. `/data` is not backed up.
+   synced schemas: a scheduled hook in the manager (below, recommended) or
+   `tools/backup.sh` from cron. One dump gives one consistent snapshot of
+   registry and data together, which a schema-only dump does not. `/data`
+   is not backed up.
 2. **The Fernet key in the organisation's password manager**, entered the
    day `.env` is created and again whenever it changes. It must not sit
    next to the dumps: a dump plus the key is every stored password.
 3. **A restore test once**, on a throwaway database, before the routine is
    trusted.
+
+### Scheduled backup from the manager (recommended)
+
+The manager runs scripts with database credentials, masked output, a
+history in the UI and a failure e-mail: hooks. A hook of kind
+`scheduled` runs daily at a time of day (slice 13, design §8), and the
+backup is its first use. Restore stays the manual procedure below.
+
+1. **A run-as connection.** Under Settings → Databases add a row for a
+   role that can read everything, for example a `backup` role with
+   `pg_read_all_data` (PostgreSQL 14+):
+
+   ```sql
+   CREATE ROLE backup LOGIN PASSWORD '...';
+   GRANT pg_read_all_data TO backup;
+   ```
+
+   With the bundled PostGIS the host is `postgis`; on an existing server
+   it is the server's address as seen from the container.
+2. **A place for the dumps**, bind-mounted in the server-local
+   `docker-compose.override.yml` (ignored by git):
+
+   ```yaml
+   services:
+     manager:
+       volumes:
+         - /srv/backup/dbsync:/backup
+   ```
+
+   The directory must be writable by the container's `manager` user
+   (uid from `docker compose exec manager id -u`); `chown` it once.
+3. **The hook.** Settings → Hooks → Add: kind `scheduled`, run as the
+   `backup` row, `run_at` 02:15, `timeout_s` 3600, `notify_emails` the
+   operator, and this command verbatim (`PG*` are set by the manager, so
+   `pg_dump` needs no connection arguments):
+
+   ```sh
+   set -e
+   out=/backup/${PGDATABASE}-$(date +%Y%m%d-%H%M).pgdump
+   pg_dump -Fc --no-password -f "$out.partial" && mv "$out.partial" "$out"
+   find /backup -name "${PGDATABASE}-*.pgdump" -mtime +30 -delete
+   echo "backup: $out ($(du -h "$out" | cut -f1))"
+   ```
+
+4. **Run now** once from the Scheduled section on the Projects page and
+   check that the run is `ok` and the file exists; then
+   `pg_restore -l` on it. Every night after that: `ok` in the section, a
+   mail only when a run fails and again when the next one succeeds.
+
+The dump does not contain `DBSYNC_MANAGER_SECRET_KEY`; that key stays in
+the password manager (item 2 of the routine).
+
+**Version check.** `pg_dump` must not be older than the server's major
+version, or it refuses with "server version mismatch". Compare
+`docker compose exec manager pg_dump --version` with
+`SELECT version()` on the server. If the image's client is older (the
+base image ships the distribution's client; the bundled PostGIS is 16),
+set `PG_CLIENT_MAJOR=16` in `.env` and rebuild (`docker compose build`):
+the Dockerfile then installs that client from apt.postgresql.org.
+
+**Manager hook or cron?** The hook gives a failure mail and a history in
+the UI, and runs inside the container with the same `pg_dump` for every
+installation. Cron on the host is independent of the manager being up.
+Installations that prefer cron keep `tools/backup.sh`:
 
 ### Cron
 

@@ -438,6 +438,62 @@ class WizardViewTests(TestCase):
 
 
 @tag("db")
+class ScheduledPageTests(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        from datetime import time as dtime
+
+        from registry.models import Hook
+
+        ensure_groups()
+        cls.operator = User.objects.create_user("op3", password="pw")
+        cls.operator.groups.add(Group.objects.get(name="operator"))
+        cls.viewer = User.objects.create_user("v3", password="pw")
+        cls.viewer.groups.add(Group.objects.get(name="viewer"))
+        database = Database(name="gis3", host="postgis", dbname="gis", user="backup")
+        database.password = "pw"
+        database.save()
+        cls.hook = Hook.objects.create(
+            name="nightly backup", kind="scheduled", command="pg_dump -Fc", database=database,
+            run_at=dtime(2, 15), notify_emails=["ops@example.org"], last_status="failed", timeout_s=3600,
+        )
+
+    def test_home_lists_scheduled_hooks_and_opens_the_section_on_failure(self):
+        self.client.login(username="op3", password="pw")
+        response = self.client.get(reverse("home"))
+        self.assertContains(response, '<details class="section mt-3" open>')
+        self.assertContains(response, "nightly backup")
+        self.assertContains(response, "02:15")
+        self.assertContains(response, "backup (gis3)")
+        self.assertContains(response, '<span class="badge bad">failed</span>')
+        self.assertContains(response, "Run now")
+        self.client.login(username="v3", password="pw")
+        self.assertNotContains(self.client.get(reverse("home")), "Run now")
+
+    def test_run_now_creates_a_request_and_the_page_shows_it(self):
+        from registry.models import SyncRun
+
+        self.client.login(username="op3", password="pw")
+        response = self.client.post(reverse("scheduled_run", args=[self.hook.pk]))
+        self.assertRedirects(response, reverse("scheduled", args=[self.hook.pk]))
+        run = SyncRun.objects.get(hook=self.hook)
+        self.assertIsNone(run.project)
+        self.assertEqual(run.summary["status"], "requested")
+        self.assertEqual(run.summary["requested_by"], "op3")
+        self.assertTrue(Event.objects.filter(project__isnull=True, source="user", message__contains="nightly backup").exists())
+        page = self.client.get(reverse("scheduled", args=[self.hook.pk]))
+        self.assertContains(page, "scheduled hook")
+        self.assertContains(page, "requested by op3")
+        self.assertContains(page, '<span class="badge info">requested</span>')
+        self.assertContains(page, "pg_dump -Fc")
+        # A second request while one is pending is refused.
+        self.assertEqual(self.client.post(reverse("scheduled_run", args=[self.hook.pk])).status_code, 409)
+        self.client.login(username="v3", password="pw")
+        self.assertEqual(self.client.post(reverse("scheduled_run", args=[self.hook.pk])).status_code, 403)
+        self.assertEqual(self.client.get(reverse("scheduled", args=[self.hook.pk])).status_code, 200)
+
+
+@tag("db")
 class HookPageTests(TestCase):
     @classmethod
     def setUpTestData(cls):

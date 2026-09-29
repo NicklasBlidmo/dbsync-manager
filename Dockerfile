@@ -22,6 +22,22 @@ RUN apt-get update \
     && tar -C / -Jxpf /tmp/s6-overlay-${S6_ARCH}.tar.xz \
     && rm -f /tmp/s6-overlay-*.tar.xz
 
+# --- optional newer PostgreSQL client (slice 13, docs/backup.md) ---
+# pg_dump refuses a server newer than itself. Empty = the distribution's
+# postgresql-client above; PG_CLIENT_MAJOR=16 installs that major from
+# apt.postgresql.org. Set in .env (compose passes it as a build arg).
+ARG PG_CLIENT_MAJOR=
+RUN if [ -n "$PG_CLIENT_MAJOR" ]; then \
+        set -e; \
+        apt-get update && apt-get install -y --no-install-recommends curl ca-certificates; \
+        install -d /usr/share/postgresql-common/pgdg; \
+        curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc; \
+        . /etc/os-release; \
+        echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt ${VERSION_CODENAME}-pgdg main" > /etc/apt/sources.list.d/pgdg.list; \
+        apt-get update && apt-get install -y --no-install-recommends "postgresql-client-${PG_CLIENT_MAJOR}"; \
+        rm -rf /var/lib/apt/lists/*; \
+    fi
+
 # --- db-sync patches (only dbsync.py exists in the image; the patch also
 #     touches CHANGELOG.md and docs/, which are skipped) ---
 COPY patches/ /tmp/patches/

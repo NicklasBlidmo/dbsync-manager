@@ -124,10 +124,16 @@ class Database(OwnedModel):
 
 
 class Hook(OwnedModel):
+    """A shell command the supervisor runs (§8): around a project's life
+    (post_init, pre_remove, post_pull) or, since slice 13, daily at a time of
+    day for the installation as a whole (scheduled: backup, vacuum, reports).
+    """
+
     class Kind(models.TextChoices):
         POST_INIT = "post_init", "post_init"
         PRE_REMOVE = "pre_remove", "pre_remove"
         POST_PULL = "post_pull", "post_pull"
+        SCHEDULED = "scheduled", "scheduled"
 
     name = models.CharField(max_length=100, unique=True)
     kind = models.CharField(max_length=20, choices=Kind.choices)
@@ -139,14 +145,47 @@ class Hook(OwnedModel):
     database = models.ForeignKey(
         Database, null=True, blank=True, on_delete=models.PROTECT, related_name="hooks",
         verbose_name="run as (database connection)",
-        help_text="Connection the hook's PG* variables and pgpass use. Leave empty to use the project's sync connection.",
+        help_text="Connection the hook's PG* variables and pgpass use. Project hooks: leave empty to use the "
+                  "project's sync connection. Scheduled hooks: required.",
     )
+    # Scheduled hooks only (slice 13). They belong to the installation, not
+    # to a project, so recipients and credentials are their own. last_* are
+    # written by the supervisor.
+    enabled = models.BooleanField(default=True, help_text="Scheduled hooks only: a disabled hook is never started by the clock.")
+    run_at = models.TimeField(
+        null=True, blank=True,
+        help_text="Scheduled hooks only: time of day, in the installation's TZ. Once per day, at the first supervisor tick after this time.",
+    )
+    notify_emails = ArrayField(
+        models.EmailField(), default=list, blank=True,
+        help_text="Scheduled hooks only: one mail when a run fails, one when the next run succeeds.",
+    )
+    last_started_at = models.DateTimeField(null=True, blank=True, editable=False)
+    last_finished_at = models.DateTimeField(null=True, blank=True, editable=False)
+    last_status = models.CharField(max_length=12, blank=True, default="", editable=False)   # ok, failed, running, interrupted
 
     class Meta:
         ordering = ["kind", "name"]
 
     def __str__(self):
         return f"{self.name} [{self.kind}]"
+
+    @property
+    def is_scheduled(self) -> bool:
+        return self.kind == self.Kind.SCHEDULED
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+
+        if not self.is_scheduled:
+            return
+        errors = {}
+        if self.database_id is None:
+            errors["database"] = "A scheduled hook has no project to borrow credentials from: choose the connection it runs as."
+        if self.run_at is None:
+            errors["run_at"] = "Time of day to run, in the installation's TZ."
+        if errors:
+            raise ValidationError(errors)
 
     def is_referenced(self) -> bool:
         """True when any project uses this hook; its kind is then locked in the admin."""
@@ -304,7 +343,9 @@ class SyncRun(models.Model):
         HOOK = "hook", "hook"
         CHECK = "check", "check"
 
-    project = models.ForeignKey(SyncProject, on_delete=models.CASCADE, related_name="runs")
+    # Null for a scheduled hook's run, which belongs to the installation (slice 13).
+    project = models.ForeignKey(SyncProject, null=True, blank=True, on_delete=models.CASCADE, related_name="runs")
+    hook = models.ForeignKey(Hook, null=True, blank=True, editable=False, on_delete=models.SET_NULL, related_name="runs")
     kind = models.CharField(max_length=5, choices=Kind.choices)
     started_at = models.DateTimeField(default=timezone.now)
     finished_at = models.DateTimeField(null=True, blank=True)
@@ -319,7 +360,8 @@ class SyncRun(models.Model):
         indexes = [models.Index(fields=["project", "-started_at"])]
 
     def __str__(self):
-        return f"{self.project} {self.kind} @ {self.started_at:%Y-%m-%d %H:%M}"
+        owner = self.project if self.project_id else (self.hook.name if self.hook_id else "installation")
+        return f"{owner} {self.kind} @ {self.started_at:%Y-%m-%d %H:%M}"
 
 
 class SyncStatus(models.Model):

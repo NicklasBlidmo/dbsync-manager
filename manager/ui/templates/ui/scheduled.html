@@ -1,0 +1,30 @@
+{% extends "ui/base.html" %}
+{% load ui_extras %}
+{% block title %}{{ hook.name }} · dbsync-manager{% endblock %}
+{% block content %}
+<h1 class="page-title">{{ hook.name }} <span class="muted">scheduled hook</span></h1>
+<p class="page-subtitle">Daily at {{ hook.run_at|time:"H:i"|default:"(no time set)" }} {{ tz }} · runs as <strong>{{ run_as }}</strong> · timeout {{ hook.timeout_s }} s{% if not hook.enabled %} · <span class="badge muted">disabled</span>{% endif %}
+  · <a class="muted" href="{% url 'home' %}">all projects</a></p>
+
+<div class="panel status-bar">
+  <span class="badge {{ badge }}">{{ status }}</span>
+  <span class="muted">last started {{ hook.last_started_at|ago|default:"never" }}{% if hook.last_finished_at %}, finished {{ hook.last_finished_at|ago }}{% endif %}</span>
+  {% if can_operate %}
+  <div class="actions">
+    <form class="inline" method="post" action="{% url 'scheduled_run' hook.pk %}">{% csrf_token %}<button type="submit"{% if status == 'running' %} disabled{% endif %}>Run now</button></form>
+    {% if user.is_staff %}<a class="button" href="{% url 'admin:registry_hook_change' hook.pk %}">Edit in Settings</a>{% endif %}
+  </div>
+  {% endif %}
+</div>
+
+<h2 class="section-title">Runs <span class="muted">· last {{ runs|length }} · output is masked and capped, design §8</span></h2>
+<div id="runs" hx-get="{% url 'scheduled_runs' hook.pk %}" hx-trigger="every 15s" hx-swap="innerHTML">
+  {% include "ui/partials/hook_runs_table.html" %}
+  {% if not runs %}<p class="muted">No runs yet.</p>{% endif %}
+</div>
+
+<details class="section">
+  <summary class="section-title">Command <span class="muted">· sh -c, PG* set for the run-as connection, DBSYNC_HOOK_NAME, DBSYNC_RUN_ID, DBSYNC_DATA_DIR</span></summary>
+  <pre class="pre-medium">{{ hook.command }}</pre>
+</details>
+{% endblock %}

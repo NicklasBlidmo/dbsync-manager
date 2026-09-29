@@ -64,6 +64,13 @@ Invariants learned the hard way:
 - "Run hook now" is a sync_run row (kind hook, summary.status requested)
   that the supervisor executes on its next tick; the web process never runs
   a hook itself. Hook output stored in the registry is masked and capped.
+- Hooks run in worker threads (`supervisor/hooks.py` start_job); the tick
+  starts a job and reaps it on a later tick. Nothing in the loop may wait
+  for a hook: post_init applies its result in `_finish_hook_job`, a
+  pre_remove step returns Wait, scheduled hooks live in
+  `Supervisor.scheduled_jobs`. Tests that drive a hook through
+  `_reconcile` call it once to start, `hooks.wait_for_jobs`, then once
+  to reap (tests_hooks.PostInitFlowTests.reconcile).
 - db-sync's own init adopts existing schemas whose base comment names the
   project (downloads `db_version`, compares base with the GeoPackage). The
   manager's `add` relies on that; it never re-implements init.

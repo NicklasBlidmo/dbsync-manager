@@ -1,0 +1,22 @@
+{% load ui_extras %}
+{% if scheduled %}
+<table class="table">
+  <thead><tr><th>Hook</th><th>Daily at</th><th>Runs as</th><th>Last run</th><th>Status</th>{% if can_operate %}<th></th>{% endif %}</tr></thead>
+  <tbody>
+  {% for row in scheduled %}
+    <tr>
+      <td><a href="{% url 'scheduled' row.hook.pk %}">{{ row.hook.name }}</a>{% if not row.hook.enabled %} <span class="badge muted">disabled</span>{% endif %}</td>
+      <td class="nowrap">{{ row.hook.run_at|time:"H:i"|default:"" }}</td>
+      <td class="muted">{{ row.run_as }}</td>
+      <td class="muted nowrap">{{ row.last|ago }}</td>
+      <td><span class="badge {{ row.badge }}">{{ row.status }}</span></td>
+      {% if can_operate %}
+      <td class="num"><form class="inline" method="post" action="{% url 'scheduled_run' row.hook.pk %}">{% csrf_token %}<button type="submit"{% if row.status == 'running' %} disabled{% endif %}>Run now</button></form></td>
+      {% endif %}
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted">No scheduled hooks. Add one under Settings → Hooks with kind "scheduled"; a nightly backup is the first use (docs/backup.md).</p>
+{% endif %}

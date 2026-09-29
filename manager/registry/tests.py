@@ -76,6 +76,23 @@ GOOD_ENV = {
 }
 
 
+class HookValidationTests(SimpleTestCase):
+    def test_scheduled_hook_needs_run_as_and_a_time(self):
+        from datetime import time as dtime
+
+        from django.core.exceptions import ValidationError
+
+        from .models import Hook
+
+        with self.assertRaises(ValidationError) as ctx:
+            Hook(name="backup", kind="scheduled", command="pg_dump").clean()
+        self.assertEqual(sorted(ctx.exception.message_dict), ["database", "run_at"])
+        Hook(name="grants", kind="post_init", command="true").clean()          # project hooks: nothing required
+        hook = Hook(name="backup", kind="scheduled", command="pg_dump", run_at=dtime(2, 15))
+        hook.database_id = 1
+        hook.clean()
+
+
 class GenerateKeysTests(SimpleTestCase):
     VALUES = {"DJANGO_SECRET_KEY": "django-new", "DBSYNC_MANAGER_SECRET_KEY": "fernet-new"}
 

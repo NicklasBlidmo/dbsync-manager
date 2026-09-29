@@ -112,11 +112,24 @@ class DatabaseAdmin(OwnedAdmin):
 
 @admin.register(Hook)
 class HookAdmin(OwnedAdmin):
-    list_display = ["name", "kind", "database", "timeout_s", "created_by", "created_at"]
-    list_filter = ["kind", "database"]
+    list_display = ["name", "kind", "database", "timeout_s", "run_at", "enabled", "last_status", "created_by", "created_at"]
+    list_filter = ["kind", "database", "enabled"]
     search_fields = ["name", "command"]
-    readonly_fields = ["created_by", "created_at"]
-    fields = ["name", "kind", "command", "timeout_s", "database", "created_by", "created_at"]
+    readonly_fields = ["created_by", "created_at", "last_started_at", "last_finished_at", "last_status"]
+    fieldsets = [
+        (None, {"fields": ["name", "kind", "command", "timeout_s", "database", "created_by", "created_at"]}),
+        ("Scheduled hooks only", {
+            # Shown while kind = scheduled (ui/admin-hook.js); Hook.clean() requires run as and run_at then.
+            "classes": ["scheduled-only"],
+            "description": "Runs once a day at run_at (installation TZ) as the connection above, which is then "
+                           "required; one mail to notify_emails when a run fails and one when the next run "
+                           "succeeds. A nightly backup is the first use: docs/backup.md.",
+            "fields": ["enabled", "run_at", "notify_emails", "last_started_at", "last_finished_at", "last_status"],
+        }),
+    ]
+
+    class Media:
+        js = ["ui/admin-hook.js"]
 
     def get_readonly_fields(self, request, obj=None):
         fields = list(super().get_readonly_fields(request, obj))

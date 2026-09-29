@@ -101,6 +101,7 @@ def home(request):
         "health_choices": SyncProject.Health.choices,
         "can_add": request.user.has_perm("registry.add_syncproject"),
     }
+    context.update(_scheduled_context(request))
     return render(request, "ui/home.html", context)
 
 
@@ -286,17 +287,17 @@ def project_log(request, pk):
 HOOK_KINDS = ("post_init", "pre_remove", "post_pull")
 
 
-def _hooks_context(project):
-    from registry.models import SyncRun
-
-    configured = [(kind, getattr(project, f"{kind}_hook")) for kind in HOOK_KINDS]
-    runs = list(project.runs.filter(kind=SyncRun.Kind.HOOK).order_by("-started_at")[:10])
+def _decorate_runs(runs):
+    """Label, state, path and output for hook-run rows, project and scheduled alike."""
     for run in runs:
         summary = run.summary or {}
         run.label = f"{summary.get('event', summary.get('hook_kind', '?'))} · {summary.get('hook', '?')}"
         trigger = summary.get("trigger", "manual" if summary.get("requested_by") else "auto")
         if trigger == "manual":
             run.path = f"requested by {summary.get('requested_by') or '?'} (never blocks)"
+        elif summary.get("event") == "scheduled":
+            hook = run.hook
+            run.path = f"daily at {hook.run_at:%H:%M}" if hook is not None and hook.run_at else "schedule"
         else:
             run.path = {"post_init": "after init (blocks on failure)", "post_pull": "after pull",
                         "pre_remove": "operation"}.get(summary.get("event"), "automatic")
@@ -306,6 +307,8 @@ def _hooks_context(project):
             run.state = "requested" if summary.get("status") == "requested" else "running"
         elif run.ok:
             run.state = "ok"
+        elif summary.get("interrupted"):
+            run.state = "interrupted"
         elif summary.get("timed_out"):
             run.state = "timed out"
         else:
@@ -313,6 +316,14 @@ def _hooks_context(project):
         run.output = "\n".join(part for part in (summary.get("stdout", ""), summary.get("stderr", "")) if part)
         run.duration = summary.get("duration_s")
         run.requested_by = summary.get("requested_by")
+    return runs
+
+
+def _hooks_context(project):
+    from registry.models import SyncRun
+
+    configured = [(kind, getattr(project, f"{kind}_hook")) for kind in HOOK_KINDS]
+    runs = _decorate_runs(list(project.runs.filter(kind=SyncRun.Kind.HOOK).select_related("hook").order_by("-started_at")[:10]))
     return {"project": project, "hooks": [(k, h) for k, h in configured if h], "hook_runs": runs}
 
 
@@ -363,6 +374,84 @@ def project_run_hook(request, pk):
     events.record(project, Event.Level.INFO, f"{request.user.get_username()} requested the {kind} hook '{hook.name}'",
                   source=Event.Source.USER, user=request.user)
     return redirect("project", pk=project.pk)
+
+
+# --- scheduled hooks (slice 13, design §8) -------------------------------------------
+
+SCHEDULED_BADGES = {"ok": "ok", "failed": "bad", "running": "info", "interrupted": "warn"}
+
+
+def _run_as_text(hook):
+    return f"{hook.database.user} ({hook.database.name})" if hook.database else "no run-as database"
+
+
+def _scheduled_rows():
+    rows = []
+    for hook in Hook.objects.filter(kind=Hook.Kind.SCHEDULED).select_related("database").order_by("name"):
+        rows.append({
+            "hook": hook,
+            "run_as": _run_as_text(hook),
+            "last": hook.last_finished_at or hook.last_started_at,
+            "status": hook.last_status or "never run",
+            "badge": SCHEDULED_BADGES.get(hook.last_status, "muted"),
+        })
+    return rows
+
+
+def _scheduled_context(request):
+    rows = _scheduled_rows()
+    failed = sum(1 for row in rows if row["hook"].last_status == "failed")
+    return {"scheduled": rows, "scheduled_failed": failed, "scheduled_open": failed > 0,
+            "can_operate": request.user.has_perm("registry.change_syncproject")}
+
+
+@login_required
+def scheduled_table(request):
+    return render(request, "ui/partials/scheduled.html", _scheduled_context(request))
+
+
+def _scheduled_hook(pk):
+    return get_object_or_404(Hook.objects.select_related("database"), pk=pk, kind=Hook.Kind.SCHEDULED)
+
+
+def _scheduled_runs(hook):
+    from registry.models import SyncRun
+
+    return _decorate_runs(list(hook.runs.filter(kind=SyncRun.Kind.HOOK).select_related("hook").order_by("-started_at")[:20]))
+
+
+@login_required
+def scheduled_detail(request, pk):
+    hook = _scheduled_hook(pk)
+    context = {
+        "hook": hook, "runs": _scheduled_runs(hook), "tz": settings.TIME_ZONE, "run_as": _run_as_text(hook),
+        "status": hook.last_status or "never run", "badge": SCHEDULED_BADGES.get(hook.last_status, "muted"),
+        "can_operate": request.user.has_perm("registry.change_syncproject"),
+    }
+    return render(request, "ui/scheduled.html", context)
+
+
+@login_required
+def scheduled_runs(request, pk):
+    hook = _scheduled_hook(pk)
+    return render(request, "ui/partials/hook_runs_table.html", {"runs": _scheduled_runs(hook)})
+
+
+@login_required
+@permission_required("registry.change_syncproject", raise_exception=True)
+@require_POST
+def scheduled_run_now(request, pk):
+    """'Run now': a sync_run row with status requested; the supervisor starts it on its next tick."""
+    from supervisor import hooks as hook_runner
+
+    hook = _scheduled_hook(pk)
+    if hook.last_status == "running" or hook_runner.pending_scheduled_request(hook) is not None:
+        return HttpResponse(f"scheduled hook '{hook.name}' is already running or requested",
+                            status=409, content_type="text/plain")
+    hook_runner.request_scheduled_run(hook, request.user)
+    events.record(None, Event.Level.INFO, f"{request.user.get_username()} requested the scheduled hook '{hook.name}'",
+                  source=Event.Source.USER, user=request.user)
+    return redirect("scheduled", pk=hook.pk)
 
 
 ACTIONS = {

@@ -21,4 +21,11 @@
 <div id="projects" class="mt-3" hx-get="{% url 'projects_table' %}" hx-include=".filters" hx-trigger="every 10s" hx-swap="innerHTML">
   {% include "ui/partials/projects_table.html" %}
 </div>
+
+<details class="section mt-3"{% if scheduled_open %} open{% endif %}>
+  <summary class="section-title">Scheduled <span class="muted">· {{ scheduled|length }} hook{{ scheduled|length|pluralize }}{% if scheduled_failed %} · {{ scheduled_failed }} failed{% endif %} · daily jobs of the installation, design §8</span></summary>
+  <div id="scheduled" hx-get="{% url 'scheduled_table' %}" hx-trigger="every 30s" hx-swap="innerHTML">
+    {% include "ui/partials/scheduled.html" %}
+  </div>
+</details>
 {% endblock %}

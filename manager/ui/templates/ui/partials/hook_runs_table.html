@@ -1,0 +1,18 @@
+{% if runs %}
+<table class="table">
+  <thead><tr><th>Started</th><th>Hook</th><th>Result</th><th class="num">Seconds</th><th>Path</th><th>Ran as</th></tr></thead>
+  <tbody>
+  {% for run in runs %}
+    <tr>
+      <td class="muted nowrap">{{ run.started_at|date:"Y-m-d H:i:s" }}</td>
+      <td>{{ run.label }}</td>
+      <td><span class="badge {% if run.state == 'ok' %}ok{% elif run.state == 'requested' or run.state == 'running' %}info{% elif run.state == 'interrupted' %}warn{% else %}bad{% endif %}">{{ run.state }}</span>
+        {% if run.output %}<details><summary class="muted">output</summary><pre class="pre-medium">{{ run.output }}</pre></details>{% endif %}</td>
+      <td class="num">{{ run.duration|default_if_none:"" }}</td>
+      <td class="muted">{{ run.path }}</td>
+      <td class="muted">{{ run.run_as }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}

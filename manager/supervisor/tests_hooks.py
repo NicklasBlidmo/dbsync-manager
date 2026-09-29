@@ -16,7 +16,7 @@ from django.test import SimpleTestCase, override_settings
 from registry import crypto
 from registry.models import Database, Hook, MerginAccount, SyncConnection, SyncProject
 
-from . import alerts, hooks
+from . import alerts, hooks, operations
 from .core import PS, Runtime, Supervisor
 
 KEY = crypto.generate_key()
@@ -126,6 +126,26 @@ class ExecuteTests(SimpleTestCase):
         self.assertIsNone(result.exit_code)
         self.assertLess(result.duration_s, 10)
 
+    def test_shutdown_escalates_to_sigkill_when_sigterm_is_ignored(self):
+        # A hook that traps TERM (slice 13, brief B6): SIGKILL after
+        # INTERRUPT_KILL_AFTER seconds, run marked interrupted.
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(hooks, "INTERRUPT_KILL_AFTER", 1):
+            results = []
+            worker = threading.Thread(target=lambda: results.append(
+                hooks.execute("trap '' TERM; while :; do sleep 1; done", cwd=tmp, env=dict(os.environ), timeout_s=60)))
+            worker.start()
+            deadline = time.monotonic() + 5
+            while not hooks._running and time.monotonic() < deadline:
+                time.sleep(0.05)
+            hooks.interrupt_running()
+            worker.join(timeout=15)
+        self.assertEqual(len(results), 1)
+        result = results[0]
+        self.assertTrue(result.interrupted)
+        self.assertFalse(result.ok)
+        self.assertFalse(result.timed_out)
+        self.assertLess(result.duration_s, 10)
+
 
 class AlertTextTests(SimpleTestCase):
     @override_settings(DBSYNC_BASE_URL="http://gis.example:8090/")
@@ -185,6 +205,24 @@ class PostInitFlowTests(SimpleTestCase):
         self.run_hook = mock.patch("supervisor.core.hooks.run_hook").start()
         self.addCleanup(mock.patch.stopall)
         self.rotate = mock.patch("supervisor.core.rotate_if_needed", return_value=False).start()
+        # The registry writes are stubbed, but the in-memory row must follow
+        # them: the hook result is applied on a later tick (slice 13) and the
+        # loop reads process_state and post_init_ok_at again.
+        from django.utils import timezone
+
+        def set_state(project, state, reason):
+            project.process_state = state
+            project.process_reason = reason
+
+        self._set_state.side_effect = set_state
+        self._mark_post_init_ok.side_effect = lambda project: setattr(project, "post_init_ok_at", timezone.now())
+
+    def reconcile(self, supervisor, project):
+        """One tick, time for the hook worker to end, then the tick that reaps it."""
+        supervisor._reconcile(project)
+        hooks.wait_for_jobs(5)
+        if supervisor.runtimes[project.pk].hook_job is not None:
+            supervisor._reconcile(project)
 
     def project(self, hook):
         project, conns = project_with_hook(hook)
@@ -202,13 +240,14 @@ class PostInitFlowTests(SimpleTestCase):
         supervisor = Supervisor(1)
         rt = Runtime(child=StubChild())
         supervisor.runtimes[project.pk] = rt
-        supervisor._reconcile(project)
+        self.reconcile(supervisor, project)
         self.run_hook.assert_called_once()
         self.assertEqual(self.run_hook.call_args.args[1], hook)
         self.assertEqual(self.run_hook.call_args.args[2], "post_init")
         self._mark_post_init_ok.assert_called_once_with(project)
         self._set_state.assert_called_with(project, PS.RUNNING, "")
         self.assertFalse(rt.child.terminated)
+        self.assertIsNone(rt.hook_job)
 
     def test_hook_failure_stops_the_child_and_blocks(self):
         hook = make_hook()
@@ -218,7 +257,7 @@ class PostInitFlowTests(SimpleTestCase):
         child = StubChild()
         rt = Runtime(child=child)
         supervisor.runtimes[project.pk] = rt
-        supervisor._reconcile(project)             # runs the hook, terminates the child
+        self.reconcile(supervisor, project)        # starts the hook, reaps it, terminates the child
         self.assertTrue(child.terminated)
         self._mark_post_init_ok.assert_not_called()
         self.assertIn("post_init hook 'grants' failed (exit code 1)", rt.block_after_exit)
@@ -237,6 +276,53 @@ class PostInitFlowTests(SimpleTestCase):
         self.run_hook.assert_not_called()
         self._set_state.assert_called_with(project, PS.RUNNING, "")
 
+    def test_tick_returns_while_the_hook_runs(self):
+        # Slice 13: a hook no longer blocks the tick (open item from slice 6).
+        hook = make_hook()
+        project = self.project(hook)
+
+        def slow(*args, **kwargs):
+            time.sleep(0.6)
+            return None, hooks.HookResult(True, 0, False, "", "", 0.6)
+
+        self.run_hook.side_effect = slow
+        supervisor = Supervisor(1)
+        rt = Runtime(child=StubChild())
+        supervisor.runtimes[project.pk] = rt
+        t0 = time.monotonic()
+        supervisor._reconcile(project)
+        self.assertLess(time.monotonic() - t0, 0.4)
+        self.assertIsNotNone(rt.hook_job)
+        self.assertFalse(rt.hook_job.done)
+        self.assertEqual(project.process_reason, "running post_init hook 'grants'")
+        supervisor._reconcile(project)             # still running: not applied, not started twice
+        self.run_hook.assert_called_once()
+        self._mark_post_init_ok.assert_not_called()
+        hooks.wait_for_jobs(5)
+        supervisor._reconcile(project)             # reaped
+        self._mark_post_init_ok.assert_called_once_with(project)
+        self.assertEqual(project.process_state, PS.RUNNING)
+        self.assertIsNone(rt.hook_job)
+
+    def test_manual_run_is_one_job_at_a_time(self):
+        hook = make_hook()
+        project = self.project(hook)
+        project.process_state = PS.RUNNING
+        project.post_init_ok_at = None
+        run = mock.Mock(summary={"hook_kind": "post_init", "status": "requested", "requested_by": "op"})
+        with mock.patch("supervisor.core.hooks.pending_requests", return_value=[run, run]):
+            self.run_hook.return_value = (run, hooks.HookResult(True, 0, False, "", "", 0.1))
+            supervisor = Supervisor(1)
+            rt = Runtime(child=StubChild())
+            supervisor.runtimes[project.pk] = rt
+            supervisor._reconcile(project)
+            self.assertEqual(rt.hook_job_kind, "manual:post_init")
+            hooks.wait_for_jobs(5)
+            supervisor._reconcile(project)         # reaps the first, starts the second
+        self.assertEqual(self.run_hook.call_count, 2)
+        self.assertEqual(self.run_hook.call_args.kwargs["trigger"], "manual")
+        self._mark_post_init_ok.assert_called_once_with(project)
+
     def test_start_is_blocked_while_post_init_not_ok_and_schemas_exist(self):
         hook = make_hook()
         project = self.project(hook)
@@ -248,3 +334,25 @@ class PostInitFlowTests(SimpleTestCase):
             spawn.assert_not_called()
         self.assertEqual(self._set_state.call_args.args[1], PS.BLOCKED)
         self.assertIn("post_init hook has not succeeded", self._set_state.call_args.args[2])
+
+
+@override_settings(DBSYNC_MANAGER_SECRET_KEY=KEY)
+class PreRemoveStepTests(SimpleTestCase):
+    def test_step_waits_for_the_worker_then_reports_its_result(self):
+        hook = make_hook("cleanup", "pre_remove")
+        project, _ = project_with_hook()
+        project.pre_remove_hook = hook
+        operation = mock.Mock(project=project, pk=9)
+        supervisor = Supervisor(1)
+        failed = hooks.HookResult(False, 2, False, "", "boom", 0.1)
+        with mock.patch.object(Supervisor, "_project_db_version", return_value=3), \
+                mock.patch("supervisor.core.hooks.run_hook", return_value=(mock.Mock(pk=77), failed)):
+            first = supervisor.io.pre_remove_hook(operation)
+            self.assertIsInstance(first, operations.Wait)
+            self.assertIn(project.pk, supervisor.operation_hook_jobs)
+            hooks.wait_for_jobs(5)
+            with self.assertRaises(operations.StepFailed) as ctx:
+                supervisor.io.pre_remove_hook(operation)
+        self.assertIn("exit code 2", str(ctx.exception))
+        self.assertIn("run 77", str(ctx.exception))
+        self.assertNotIn(project.pk, supervisor.operation_hook_jobs)

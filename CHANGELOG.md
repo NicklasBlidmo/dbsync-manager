@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- Scheduled hooks (slice 13): a hook of kind `scheduled` runs once a day
+  at `run_at` (in `TZ`) as its own run-as connection, with its own alert
+  recipients (one mail per transition: failed, recovered). "Run now" and
+  a history on the Projects page's new **Scheduled** section and on the
+  hook's own page. A nightly `pg_dump` is the first use (docs/backup.md).
+  Migration 0011: `Hook` gets the scheduling fields, `SyncRun.project`
+  becomes nullable and `SyncRun.hook` records the hook of a run.
+- Every hook runs in a worker thread: the supervisor tick only starts
+  and reaps hooks (closes the slice 6 item). A hook still running at
+  shutdown gets SIGTERM, SIGKILL after 10 s, and its run is marked
+  `interrupted`; a `pre_remove` hook makes its operation wait instead of
+  blocking the loop.
+- `PG_CLIENT_MAJOR` in `.env`: rebuild with a newer PostgreSQL client
+  from apt.postgresql.org when the server is newer than the image's
+  `pg_dump`.
 - Cookie names now carry `HTTP_PORT` (`dbsync_manager_8080_sessionid`):
   two installations on one host shared a cookie and logged each other out.
   **Everyone is logged out once at this upgrade**, and again if `HTTP_PORT`

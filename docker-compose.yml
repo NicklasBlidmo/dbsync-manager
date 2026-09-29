@@ -12,7 +12,11 @@
 
 services:
   manager:
-    build: .
+    build:
+      context: .
+      args:
+        # Newer pg_dump for a scheduled backup (docs/backup.md); empty = distribution client.
+        PG_CLIENT_MAJOR: ${PG_CLIENT_MAJOR:-}
     image: dbsync-manager:local
     restart: unless-stopped
     env_file: .env
