@@ -51,8 +51,11 @@ backup is its first use. Restore stays the manual procedure below.
          - /srv/backup/dbsync:/backup
    ```
 
-   The directory must be writable by the container's `manager` user
-   (uid from `docker compose exec manager id -u`); `chown` it once.
+   The directory must be owned by the container's `manager` user:
+
+   ```sh
+   sudo chown "$(docker compose exec manager id -u manager)" /srv/backup/dbsync
+   ```
 3. **The hook.** Settings → Hooks → Add: kind `scheduled`, run as the
    `backup` row, `run_at` 02:15, `timeout_s` 3600, `notify_emails` the
    operator, and this command verbatim (`PG*` are set by the manager, so
@@ -67,9 +70,19 @@ backup is its first use. Restore stays the manual procedure below.
    ```
 
 4. **Run now** once from the Scheduled section on the Projects page and
-   check that the run is `ok` and the file exists; then
-   `pg_restore -l` on it. Every night after that: `ok` in the section, a
-   mail only when a run fails and again when the next one succeeds.
+   check that the run is `ok` and the file exists. Then list the dump
+   through the manager container, where `pg_restore` of the right
+   version and `/backup` are:
+
+   ```sh
+   docker compose exec manager pg_restore -l /backup/<file>.pgdump | grep -c ' SCHEMA - '
+   ```
+
+   The count is the number of schemas in the dump (a plain `grep SCHEMA`
+   also counts COMMENT and ACL lines; piping the file through
+   `docker exec -i` fails with "did not find magic string"). Every night
+   after that: `ok` in the section, a mail only when a run fails and
+   again when the next one succeeds.
 
 The dump does not contain `DBSYNC_MANAGER_SECRET_KEY`; that key stays in
 the password manager (item 2 of the routine).

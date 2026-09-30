@@ -99,3 +99,7 @@ html[data-theme="dark"] {
 
 /* The link back to the manager in the header's user tools */
 #user-tools a.back-to-manager { margin-right: .75em; }
+
+/* Delete is a dark red button; --button-fg (forest) made it unreadable
+   (field test 2026-09-30). */
+.deletelink, .deletelink:link, .deletelink:visited, .submit-row a.deletelink:hover { color: #fff; }

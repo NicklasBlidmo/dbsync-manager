@@ -47,6 +47,20 @@ class DueTests(SimpleTestCase):
         yesterday = local(28, 2, 16).astimezone(tz.utc)
         self.assertTrue(scheduling.is_due(run_at, yesterday, local(29, 14, 0)))
 
+    def test_run_at_moved_the_same_day(self):
+        # Field test 2026-09-30, finding 1: the date comparison never fired
+        # again the same day. Moved later than the last run: one more run.
+        started = local(29, 10, 9).astimezone(tz.utc)
+        self.assertTrue(scheduling.is_due(dtime(10, 59), started, local(29, 11, 0)))
+        self.assertFalse(scheduling.is_due(dtime(10, 59), started, local(29, 10, 58)))
+        # Moved earlier than the last run: nothing until tomorrow.
+        started = local(29, 10, 38).astimezone(tz.utc)
+        self.assertFalse(scheduling.is_due(dtime(9, 59), started, local(29, 10, 40)))
+        self.assertTrue(scheduling.is_due(dtime(9, 59), started, local(30, 9, 59)))
+        # Down over run_at after a run earlier the same day: catch-up at start.
+        started = local(29, 10, 9).astimezone(tz.utc)
+        self.assertTrue(scheduling.is_due(dtime(10, 59), started, local(29, 11, 6)))
+
     def test_no_time_is_never_due(self):
         self.assertFalse(scheduling.is_due(None, None, local(29, 12, 0)))
 

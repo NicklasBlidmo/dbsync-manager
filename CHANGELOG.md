@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Scheduled hooks are due once the clock is past today's `run_at` and no
+  run started since then, instead of "no run today": a `run_at` moved
+  later the same day now runs once more, and the catch-up after downtime
+  works after a run earlier that day (field test 2026-09-30).
+- Admin: 24-hour times and unabbreviated dates (`LANGUAGE_CODE` en-gb);
+  the Delete button is readable.
 - Hook commands are saved with Unix line endings: a browser submits the
   textarea with CRLF and `sh` failed on the first line with "set: Illegal
   option -". `execute` also strips CR from rows saved earlier.

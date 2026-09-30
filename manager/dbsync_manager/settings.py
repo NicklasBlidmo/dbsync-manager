@@ -161,7 +161,10 @@ X_FRAME_OPTIONS = "DENY"
 
 # --- i18n / static ---------------------------------------------------------
 
-LANGUAGE_CODE = "en-us"
+# en-gb: 24-hour times and "30 September 2026" in the admin instead of
+# "2:15 a.m." and "Sept. 30, 2026" (field test 2026-09-30). The manager's
+# own templates use explicit formats.
+LANGUAGE_CODE = "en-gb"
 # One variable for the whole container. Django exports TIME_ZONE as TZ for its
 # own process only; gunicorn's master and db-sync follow the container's TZ.
 # Reading both from TZ keeps every log line on the same clock. Storage is UTC
