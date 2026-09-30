@@ -99,6 +99,13 @@ class ExecuteTests(SimpleTestCase):
         self.assertEqual(result.stderr.strip(), "oops")
         self.assertFalse(result.timed_out)
 
+    def test_crlf_command_runs(self):
+        # Rows saved before normalisation may still carry CR (2026-09-30).
+        with tempfile.TemporaryDirectory() as tmp:
+            result = hooks.execute("set -e\r\necho first\r\necho second\r\n", cwd=tmp, env=dict(os.environ), timeout_s=10)
+        self.assertTrue(result.ok, result.stderr)
+        self.assertEqual(result.stdout.split(), ["first", "second"])
+
     def test_shutdown_interrupts_a_running_hook(self):
         with tempfile.TemporaryDirectory() as tmp:
             results = []

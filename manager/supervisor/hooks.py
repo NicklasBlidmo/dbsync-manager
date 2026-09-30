@@ -187,6 +187,9 @@ def execute(command: str, *, cwd, env, timeout_s: int) -> HookResult:
     """Run `command` with sh -c in its own process group; kill the group on
     timeout, and INTERRUPT_KILL_AFTER seconds after a shutdown SIGTERM."""
     Path(cwd).mkdir(parents=True, exist_ok=True)
+    # Belt and braces for rows saved before Hook.normalise_command existed:
+    # a CR before a newline makes sh fail on the first line (2026-09-30).
+    command = command.replace("\r\n", "\n").replace("\r", "\n")
     started = time.monotonic()
     proc = subprocess.Popen(
         ["/bin/sh", "-c", command],

@@ -92,6 +92,17 @@ class HookValidationTests(SimpleTestCase):
         hook.database_id = 1
         hook.clean()
 
+    def test_command_line_endings_are_normalised(self):
+        # A textarea submits CRLF; sh then fails on "set -e\r" with
+        # "set: Illegal option -" (backup hook, 2026-09-30).
+        from .models import Hook
+
+        hook = Hook(name="backup", kind="post_init", command="set -e\r\nout=/backup/x\r\npg_dump -f \"$out\"\r\n")
+        hook.clean()
+        self.assertEqual(hook.command, "set -e\nout=/backup/x\npg_dump -f \"$out\"\n")
+        self.assertEqual(Hook.normalise_command("a\rb"), "a\nb")
+        self.assertEqual(Hook.normalise_command(None), "")
+
 
 class GenerateKeysTests(SimpleTestCase):
     VALUES = {"DJANGO_SECRET_KEY": "django-new", "DBSYNC_MANAGER_SECRET_KEY": "fernet-new"}

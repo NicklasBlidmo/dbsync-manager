@@ -174,9 +174,17 @@ class Hook(OwnedModel):
     def is_scheduled(self) -> bool:
         return self.kind == self.Kind.SCHEDULED
 
+    @staticmethod
+    def normalise_command(command: str) -> str:
+        """Unix line endings. A browser submits a textarea with CRLF, and
+        sh then sees `set -e\r` as "set: Illegal option -" on the first
+        line (backup hook, 2026-09-30)."""
+        return (command or "").replace("\r\n", "\n").replace("\r", "\n")
+
     def clean(self):
         from django.core.exceptions import ValidationError
 
+        self.command = self.normalise_command(self.command)
         if not self.is_scheduled:
             return
         errors = {}
@@ -186,6 +194,11 @@ class Hook(OwnedModel):
             errors["run_at"] = "Time of day to run, in the installation's TZ."
         if errors:
             raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        # Also for rows written without a form (shell, fixtures, the API).
+        self.command = self.normalise_command(self.command)
+        super().save(*args, **kwargs)
 
     def is_referenced(self) -> bool:
         """True when any project uses this hook; its kind is then locked in the admin."""

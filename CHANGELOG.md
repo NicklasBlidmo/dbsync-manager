@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Hook commands are saved with Unix line endings: a browser submits the
+  textarea with CRLF and `sh` failed on the first line with "set: Illegal
+  option -". `execute` also strips CR from rows saved earlier.
 - Scheduled hooks (slice 13): a hook of kind `scheduled` runs once a day
   at `run_at` (in `TZ`) as its own run-as connection, with its own alert
   recipients (one mail per transition: failed, recovered). "Run now" and
