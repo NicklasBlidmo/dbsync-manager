@@ -99,10 +99,10 @@ class Supervisor:
         self.open_operations: dict[int, Operation] = {}
         self.scheduled_jobs: dict[int, hooks.HookJob] = {}        # hook id -> running scheduled hook
         self.operation_hook_jobs: dict[int, hooks.HookJob] = {}   # project id -> running pre_remove hook
-        # Alert mails queued during the tick, (condition, account url, resolved)
-        # -> [(project, message)]; sent as one mail per key at the end of the
-        # tick, so an outage of the shared Mergin server is one mail, not five.
-        self._grouped_mail: dict = {}
+        # mergin_unreachable recovery: projects that cleared while others on
+        # the same Mergin server were still down, account url -> [(project,
+        # message)]; mailed together when the last mailed project clears.
+        self._mergin_recovered: dict = {}
         self.io = SupervisorIO(self)
         self._last_prune_day = None
         self._last_spawn_at: float | None = None
@@ -264,8 +264,6 @@ class Supervisor:
                 raise
             except Exception:  # noqa: BLE001 - one project must not stall the others
                 log.exception("reconcile failed for %s", project)
-
-        self._flush_grouped_mails()
 
         try:
             self._run_scheduled_hooks()
@@ -733,12 +731,17 @@ class Supervisor:
             log.info("check: %s confirmed %d pull run(s)", project, confirmed)
         log.info("check: %s health=%s conditions=%s", project, health, sorted(wanted) or "-")
 
+    MERGIN_KEY = "mergin_unreachable"
+
     def _track_mergin(self, project, rt, down: bool, message: str):
         """Condition mergin_unreachable: set on the first transient API failure
-        (an info event, no mail), mailed once it has been active for
-        DBSYNC_MERGIN_DOWN_ALERT_AFTER, cleared on the next success with the
-        duration (and a mail only if one went out)."""
-        key = "mergin_unreachable"
+        (an info event, no mail), cleared on the next success with the
+        duration. Mail is per Mergin server, not per project (checks are
+        staggered, so a per-tick queue would still mail one at a time): the
+        first project past DBSYNC_MERGIN_DOWN_ALERT_AFTER mails one list of
+        every project on that server with the condition and marks them all
+        mailed; the recovery mail goes when the last mailed one clears."""
+        key = self.MERGIN_KEY
         since = _parse_iso((project.active_conditions or {}).get(key))
         threshold = settings.DBSYNC_MERGIN_DOWN_ALERT_AFTER
         if down:
@@ -751,36 +754,80 @@ class Supervisor:
             if rt.mergin_alerted is None:
                 rt.mergin_alerted = age >= threshold   # adopted mid-outage: the previous supervisor mailed
             if not rt.mergin_alerted and age >= threshold:
-                rt.mergin_alerted = True
-                text = f"Mergin server unreachable for {_duration(age)}: {message}"
-                conditions.alert(project, key, text, mail=False)
-                self._queue_mail(project, key, text, resolved=False)
+                self._alert_mergin_group(project, rt, message)
         elif since is not None:
             age = (timezone.now() - since).total_seconds()
             mailed = rt.mergin_alerted if rt.mergin_alerted is not None else age >= threshold
             text = f"Mergin server reachable again after {_duration(age)}"
             conditions.resolve(project, key, text, mail=False)
-            if mailed:
-                self._queue_mail(project, key, text, resolved=True)
             rt.mergin_alerted = None
+            if mailed:
+                self._recover_mergin_group(project, text)
 
-    def _queue_mail(self, project, condition: str, message: str, *, resolved: bool):
-        url = project.mergin_account.url if getattr(project, "mergin_account_id", None) else ""
-        self._grouped_mail.setdefault((condition, url, resolved), []).append((project, message))
+    @staticmethod
+    def _account_url(project) -> str:
+        return project.mergin_account.url if getattr(project, "mergin_account_id", None) else ""
 
-    def _flush_grouped_mails(self):
-        """Send what the tick queued: one mail per (condition, account url,
-        resolved); a single project gets the usual per-project mail."""
-        queued, self._grouped_mail = self._grouped_mail, {}
-        for (condition, _url, resolved), items in queued.items():
-            try:
-                if len(items) == 1:
-                    project, message = items[0]
-                    alerts.notify(project, condition, message, resolved=resolved)
-                else:
-                    alerts.notify_group(items, condition, resolved=resolved)
-            except Exception:  # noqa: BLE001 - mail must not break the loop
-                log.exception("grouped alert mail failed (%s)", condition)
+    def _projects_with(self, key: str, url: str) -> list:
+        """Live projects on the Mergin server at `url` whose condition `key` is active."""
+        return list(
+            SyncProject.objects.filter(removed_at__isnull=True, mergin_account__url=url, active_conditions__has_key=key)
+            .select_related("mergin_account", "database")
+        )
+
+    def _mergin_mailed(self, project, now) -> bool:
+        rt = self.runtimes.get(project.pk)
+        if rt is not None and rt.mergin_alerted is not None:
+            return rt.mergin_alerted
+        since = _parse_iso((project.active_conditions or {}).get(self.MERGIN_KEY))
+        return since is not None and (now - since).total_seconds() >= settings.DBSYNC_MERGIN_DOWN_ALERT_AFTER
+
+    def _alert_mergin_group(self, project, rt, message: str):
+        """`project` crossed the threshold unmailed: one mail for every project
+        on its Mergin server with the condition, unless that outage has
+        already been announced (a project that joined late just counts as mailed)."""
+        key = self.MERGIN_KEY
+        now = timezone.now()
+        url = self._account_url(project)
+        group = self._projects_with(key, url)
+        if not any(p.pk == project.pk for p in group):
+            group.append(project)
+        if any(self._mergin_mailed(p, now) for p in group if p.pk != project.pk):
+            rt.mergin_alerted = True
+            return
+        items = []
+        for member in group:
+            since = _parse_iso((member.active_conditions or {}).get(key))
+            age = (now - since).total_seconds() if since else 0
+            text = f"Mergin server unreachable for {_duration(age)}: {message}"
+            conditions.alert(member, key, text, mail=False)
+            self.runtimes.setdefault(member.pk, Runtime()).mergin_alerted = True
+            items.append((member, text))
+        rt.mergin_alerted = True
+        self._send_mergin(items, resolved=False)
+
+    def _recover_mergin_group(self, project, text: str):
+        """`project` (mailed) cleared: remember it; mail the whole group once
+        no mailed project on its Mergin server is still down."""
+        url = self._account_url(project)
+        pending = self._mergin_recovered.setdefault(url, [])
+        pending.append((project, text))
+        now = timezone.now()
+        remaining = [p for p in self._projects_with(self.MERGIN_KEY, url) if p.pk != project.pk]
+        if any(self._mergin_mailed(p, now) for p in remaining):
+            return
+        items = self._mergin_recovered.pop(url, [])
+        self._send_mergin(items, resolved=True)
+
+    def _send_mergin(self, items, *, resolved: bool):
+        try:
+            if len(items) == 1:
+                member, text = items[0]
+                alerts.notify(member, self.MERGIN_KEY, text, resolved=resolved)
+            elif items:
+                alerts.notify_group(items, self.MERGIN_KEY, resolved=resolved)
+        except Exception:  # noqa: BLE001 - mail must not break the loop
+            log.exception("mergin_unreachable mail failed")
 
     # --- helpers -------------------------------------------------------------
 

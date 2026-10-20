@@ -114,6 +114,24 @@ class MerginUnreachableFlowTests(SimpleTestCase):
         self.supervisor = Supervisor(1)
         self.rt = Runtime()
         self.supervisor.runtimes[self.project.pk] = self.rt
+        # The conditions module is a mock; keep the in-memory rows honest, and
+        # answer the registry query for the group from them.
+        self.all_projects = [self.project]
+        key = "mergin_unreachable"
+
+        def activate(project, condition, message, level=None, *, mail=True):
+            project.active_conditions = {**(project.active_conditions or {}),
+                                         condition: dj_tz.now().isoformat(timespec="seconds")}
+            return True
+
+        def resolve(project, condition, message="", *, mail=True):
+            project.active_conditions = {k: v for k, v in (project.active_conditions or {}).items() if k != condition}
+            return True
+
+        self.conditions.activate.side_effect = activate
+        self.conditions.resolve.side_effect = resolve
+        mock.patch.object(Supervisor, "_projects_with",
+                          side_effect=lambda key_, url: [p for p in self.all_projects if key_ in (p.active_conditions or {})]).start()
 
     def tick(self, down, projects=None):
         # A fresh tuple per call: core discards the key from the returned set.
@@ -122,7 +140,6 @@ class MerginUnreachableFlowTests(SimpleTestCase):
         for project in projects or [self.project]:
             self.supervisor.runtimes[project.pk].last_check_at = 0
             self.supervisor._reconcile(project)
-        self.supervisor._flush_grouped_mails()
 
     def since(self, seconds_ago):
         self.project.active_conditions = {"mergin_unreachable": (dj_tz.now() - timedelta(seconds=seconds_ago)).isoformat(timespec="seconds")}
@@ -175,33 +192,76 @@ class MerginUnreachableFlowTests(SimpleTestCase):
         self.assertEqual(self.alerts.notify.call_args.kwargs["resolved"], True)
         self.conditions.apply.assert_called()   # the check's own conditions are still managed
 
-    def test_five_projects_in_one_outage_get_one_mail_each_way(self):
+    def test_five_projects_checked_in_five_ticks_get_one_mail_each_way(self):
+        # Checks are staggered: each project keeps the phase of its first
+        # check, so the projects cross the threshold in different ticks.
         from registry.models import MerginAccount
 
         account = MerginAccount(pk=1, name="svc", url="https://app.merginmaps.com", username="svc")
         projects = []
-        since = (dj_tz.now() - timedelta(seconds=960)).isoformat(timespec="seconds")
         for pk in range(11, 16):
+            since = (dj_tz.now() - timedelta(seconds=900 + 20 * pk)).isoformat(timespec="seconds")
             project = SyncProject(pk=pk, mergin_project=f"ak/p{pk}", schema_prefix=f"p{pk}", mergin_account=account,
                                   desired_state=SyncProject.DesiredState.PAUSED, process_state=PS.STOPPED,
                                   health=H.OK, active_conditions={"mergin_unreachable": since},
                                   notify_emails=["ops@example.org"])
             projects.append(project)
             self.supervisor.runtimes[pk] = Runtime(mergin_alerted=False)
-        self.tick(down=True, projects=projects)
-        self.assertEqual(self.conditions.alert.call_count, 5)          # one event per project
+        self.all_projects = projects
+        # Tick 1: the first project past the threshold mails the whole group.
+        self.tick(down=True, projects=[projects[0]])
         self.alerts.notify.assert_not_called()
-        self.alerts.notify_group.assert_called_once()                  # one mail
+        self.alerts.notify_group.assert_called_once()
         items = self.alerts.notify_group.call_args.args[0]
-        self.assertEqual([p.mergin_project for p, _ in items], [f"ak/p{pk}" for pk in range(11, 16)])
+        self.assertEqual(sorted(p.mergin_project for p, _ in items), [f"ak/p{pk}" for pk in range(11, 16)])
         self.assertEqual(self.alerts.notify_group.call_args.kwargs["resolved"], False)
-        # Recovery in one tick: one mail again.
-        self.tick(down=False, projects=projects)
-        self.assertEqual(self.conditions.resolve.call_count, 5)
+        self.assertEqual(self.conditions.alert.call_count, 5)          # one event per project
+        self.assertTrue(all(self.supervisor.runtimes[pk].mergin_alerted for pk in range(11, 16)))
+        # Ticks 2-5: the others cross the threshold; no more mail.
+        for project in projects[1:]:
+            self.tick(down=True, projects=[project])
+        self.alerts.notify_group.assert_called_once()
+        self.alerts.notify.assert_not_called()
+        # Recovery, one project per tick: nothing until the last one clears.
+        for project in projects[:-1]:
+            self.tick(down=False, projects=[project])
+        self.assertEqual(self.alerts.notify_group.call_count, 1)
+        self.assertEqual(self.conditions.resolve.call_count, 4)
+        self.tick(down=False, projects=[projects[-1]])
         self.assertEqual(self.alerts.notify_group.call_count, 2)
         self.assertEqual(self.alerts.notify_group.call_args.kwargs["resolved"], True)
-        self.assertEqual(len(self.alerts.notify_group.call_args.args[0]), 5)
+        self.assertEqual(sorted(p.mergin_project for p, _ in self.alerts.notify_group.call_args.args[0]),
+                         [f"ak/p{pk}" for pk in range(11, 16)])
         self.alerts.notify.assert_not_called()
+        self.assertEqual(self.supervisor._mergin_recovered, {})
+
+    def test_late_entrant_during_an_announced_outage_is_not_mailed_again(self):
+        from registry.models import MerginAccount
+
+        account = MerginAccount(pk=1, name="svc", url="https://app.merginmaps.com", username="svc")
+        first = SyncProject(pk=21, mergin_project="ak/a", schema_prefix="a", mergin_account=account,
+                            desired_state=SyncProject.DesiredState.PAUSED, process_state=PS.STOPPED, health=H.OK,
+                            active_conditions={"mergin_unreachable": (dj_tz.now() - timedelta(seconds=1000)).isoformat(timespec="seconds")})
+        late = SyncProject(pk=22, mergin_project="ak/b", schema_prefix="b", mergin_account=account,
+                           desired_state=SyncProject.DesiredState.PAUSED, process_state=PS.STOPPED, health=H.OK,
+                           active_conditions={})
+        self.all_projects = [first, late]
+        self.supervisor.runtimes[21] = Runtime(mergin_alerted=False)
+        self.supervisor.runtimes[22] = Runtime(mergin_alerted=False)
+        self.tick(down=True, projects=[first])
+        self.alerts.notify.assert_called_once()                # alone at the time: the single-project mail
+        self.tick(down=True, projects=[late])                   # joins the outage
+        late.active_conditions = {"mergin_unreachable": (dj_tz.now() - timedelta(seconds=1000)).isoformat(timespec="seconds")}
+        self.tick(down=True, projects=[late])                   # crosses the threshold later
+        self.alerts.notify.assert_called_once()
+        self.alerts.notify_group.assert_not_called()
+        self.assertTrue(self.supervisor.runtimes[22].mergin_alerted)
+        # Both clear: one recovery mail naming both.
+        self.tick(down=False, projects=[first])
+        self.assertEqual(self.alerts.notify.call_count, 1)
+        self.tick(down=False, projects=[late])
+        self.alerts.notify_group.assert_called_once()
+        self.assertEqual(len(self.alerts.notify_group.call_args.args[0]), 2)
 
 
 class HealthTests(SimpleTestCase):
