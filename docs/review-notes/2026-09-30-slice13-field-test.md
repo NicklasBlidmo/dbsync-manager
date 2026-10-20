@@ -59,15 +59,12 @@ slice set out to do works; four small fixes and one re-test remain.*
    the container's `manager` uid (`docker compose exec manager id -u
    manager`).
 
-## Applied (Claude Code, same day)
+## 13b verified (2026-09-30 13:51)
 
-| Item | Change |
-|---|---|
-| 1 | `scheduling.is_due`: due when `now >= today_at(run_at)` and `last_started_at` is None or `< today_at`. Tests: unchanged schedule (one per day), downtime catch-up after a run earlier the same day, run_at moved later (one more run) and earlier (tomorrow). **Step 6 re-run remains** |
-| 2 | Done before this note (f3af8f9): `Hook.normalise_command` in `clean()`/`save()`, CR stripped in `execute`; `docs/backup.md` keeps the multi-line command |
-| 3 | `admin-theme.css`: `.deletelink` and its states in white |
-| 4 | `LANGUAGE_CODE = "en-gb"` |
-| 5 | `docs/backup.md`: the `chown` with the container's uid, and the `pg_restore -l ... | grep -c ' SCHEMA - '` check through the manager container with the two pitfalls |
+With the due-logic fix deployed, step 6 passed: `Hello` with `run_at` set
+while the container was stopped ran at the first tick after start
+(`started (due at 13:50)` at 13:51:23), although it had already run
+earlier that day. Findings 1 is closed; 2–5 as delivered in 13b.
 
 ## Operational state after the test
 

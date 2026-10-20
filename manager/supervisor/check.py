@@ -44,6 +44,31 @@ HEALTH_ORDER = [Health.DIVERGED, Health.BEHIND, Health.STUCK, Health.STALE, Heal
 PENDING_KEY = "_modified_vs_base"
 
 
+# Text of the Mergin errors that are the server's or the network's problem,
+# not this installation's (review note 2026-10-20): condition
+# mergin_unreachable with a delayed mail, instead of an error per cycle.
+TRANSIENT_API_MARKERS = (
+    "502", "503", "504", "429", "upstream connect error", "connection refused", "connection reset",
+    "timed out", "timeout", "temporarily unavailable", "service unavailable", "bad gateway",
+    "gateway time", "name or service not known", "temporary failure in name resolution",
+    "network is unreachable", "remote end closed", "connection aborted",
+)
+CONFIG_API_MARKERS = ("401", "403", "404", "unauthorized", "forbidden", "not found")
+
+
+def is_transient_api_error(exc) -> bool:
+    """True for outages (5xx, refused, reset, timeout); False for 401/403/404 and anything else."""
+    code = getattr(exc, "http_error", None)
+    if code in (401, 403, 404):
+        return False
+    if code in (429, 502, 503, 504):
+        return True
+    text = str(exc).lower()
+    if any(marker in text for marker in CONFIG_API_MARKERS):
+        return False
+    return any(marker in text for marker in TRANSIENT_API_MARKERS)
+
+
 @dataclass
 class Observed:
     server_version: int | None = None
@@ -56,6 +81,7 @@ class Observed:
     db_writers: list | None = field(default_factory=list)   # None = could not be determined
     error: str = ""      # the check failed; previous values are kept
     warning: str = ""    # a best-effort part failed; the check still counts
+    mergin_unreachable: str = ""   # transient API failure: server facts carried forward, condition raised by core
 
 
 # --- gathering (I/O) ---------------------------------------------------------
@@ -165,14 +191,18 @@ def gather(project, connections) -> dict:
     # Mergin: server version and permission (project-wide).
     server_version = permission = None
     api_error = ""
+    unreachable = ""
     try:
         info = mergin_api.project_info(project.mergin_account, project.mergin_project)
         server_version = mergin_api.version_number(info)
         permission = mergin_api.permission(info)
         if server_version is None:
             api_error = "Mergin API returned no version"
-    except Exception as exc:  # noqa: BLE001 - reported in check_error
-        api_error = f"Mergin API: {exc}"
+    except Exception as exc:  # noqa: BLE001 - reported in check_error, or as mergin_unreachable
+        if is_transient_api_error(exc):
+            unreachable = f"Mergin API: {exc}"
+        else:
+            api_error = f"Mergin API: {exc}"
 
     # Database: comments, counts, writers (one connection).
     db_error = ""
@@ -220,6 +250,7 @@ def gather(project, connections) -> dict:
         errors = [e for e in (api_error, db_error, gpkg_error_by_conn.get(conn.pk, "")) if e]
         obs.server_version = server_version
         obs.mergin_permission = permission
+        obs.mergin_unreachable = unreachable
         comment = comments.get(conn.base_schema) or {}
         obs.db_version = dbinspect.parse_version(comment.get("version"))
         base, modified = db_counts_by_conn.get(conn.pk, ({}, {}))
@@ -272,6 +303,12 @@ def evaluate(status, obs, *, now, check_interval, stuck_after, process_running, 
     # A best-effort part may have failed; shown on the page, but this check counts.
     status.check_error = obs.warning
     status.last_ok_check_at = now
+
+    if obs.mergin_unreachable:
+        # The server is temporarily unreachable, not misconfigured: keep what
+        # the last successful call said; core raises mergin_unreachable.
+        obs.server_version = status.server_version
+        obs.mergin_permission = status.mergin_permission
 
     previous_local = status.local_version
     if obs.local_version != previous_local or status.local_version_changed_at is None:
@@ -413,6 +450,11 @@ def run_project_check(project, *, process_running: bool, now=None):
         healths.append(health)
         conditions |= conds
         messages.update(msgs)
+
+    unreachable = next((observed[c.pk].mergin_unreachable for c in connections if observed[c.pk].mergin_unreachable), "")
+    if unreachable:
+        conditions.add("mergin_unreachable")
+        messages["mergin_unreachable"] = unreachable
 
     health = worst(healths)
     if health != project.health:

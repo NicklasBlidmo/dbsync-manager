@@ -214,6 +214,8 @@ DBSYNC_DATA_DIR = Path(env("DBSYNC_DATA_DIR", "/data"))
 DBSYNC_TICK = env_int("DBSYNC_TICK", 30)
 DBSYNC_CHECK_INTERVAL = env_int("DBSYNC_CHECK_INTERVAL", 300)
 DBSYNC_STUCK_AFTER = env_int("DBSYNC_STUCK_AFTER", 1800)
+# A Mergin outage (5xx, refused, timeout) mails only once it has lasted this long.
+DBSYNC_MERGIN_DOWN_ALERT_AFTER = env_int("DBSYNC_MERGIN_DOWN_ALERT_AFTER", 900)
 
 # Public address of the UI, for links in alert mails (optional).
 DBSYNC_BASE_URL = env("DBSYNC_BASE_URL", "")

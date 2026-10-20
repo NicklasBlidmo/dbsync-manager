@@ -7,7 +7,10 @@ active, and once more as "resolved" when it clears. In between nothing is
 written. `sync_project.active_conditions` holds the active set with the
 time each became active; the project page shows how long they have been.
 
-E-mail goes out from `activate` and `resolve` through supervisor.alerts.
+E-mail goes out from `activate` and `resolve` through supervisor.alerts,
+unless the caller delays it (`mail=False`) and sends it later with
+`alert`: mergin_unreachable mails only after DBSYNC_MERGIN_DOWN_ALERT_AFTER
+(review note 2026-10-20).
 """
 
 from django.utils import timezone
@@ -26,7 +29,7 @@ def _save(project, active: dict):
     SyncProject.objects.filter(pk=project.pk).update(active_conditions=active)
 
 
-def activate(project, condition: str, message: str, level=Event.Level.WARNING) -> bool:
+def activate(project, condition: str, message: str, level=Event.Level.WARNING, *, mail: bool = True) -> bool:
     """Raise `condition` unless it is already active. Returns True if raised."""
     active = dict(project.active_conditions or {})
     if condition in active:
@@ -34,11 +37,18 @@ def activate(project, condition: str, message: str, level=Event.Level.WARNING) -
     events.record(project, level, message, condition=condition)
     active[condition] = timezone.now().isoformat(timespec="seconds")
     _save(project, active)
-    alerts.notify(project, condition, message)
+    if mail:
+        alerts.notify(project, condition, message)
     return True
 
 
-def resolve(project, condition: str, message: str = "") -> bool:
+def alert(project, condition: str, message: str) -> bool:
+    """Mail about a condition that is already active (delayed alert)."""
+    events.warning(project, message, condition=condition)
+    return alerts.notify(project, condition, message)
+
+
+def resolve(project, condition: str, message: str = "", *, mail: bool = True) -> bool:
     active = dict(project.active_conditions or {})
     if condition not in active:
         return False
@@ -46,7 +56,8 @@ def resolve(project, condition: str, message: str = "") -> bool:
     events.info(project, text, condition=condition)
     del active[condition]
     _save(project, active)
-    alerts.notify(project, condition, text, resolved=True)
+    if mail:
+        alerts.notify(project, condition, text, resolved=True)
     return True
 
 

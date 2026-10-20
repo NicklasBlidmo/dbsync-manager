@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Log classification after three weeks in production (review note
+  2026-10-20): "There are pending changes on server" is an info event
+  (the server moved between pull and push; the next cycle pulls), and a
+  warning only after five consecutive cycles while the last check saw
+  pending database edits on a project that is not one-way. Repeated
+  identical messages are collapsed at every level.
+- A Mergin outage (5xx, connection refused or reset, timeout) is the
+  condition `mergin_unreachable` from the first failed check, with an
+  info event; the alert mail goes out only after
+  `DBSYNC_MERGIN_DOWN_ALERT_AFTER` (default 900 s), and the recovery
+  event carries the duration. Server version and permission are kept
+  from the last successful call meanwhile. 401/403/404 stay errors.
 - Scheduled hooks are due once the clock is past today's `run_at` and no
   run started since then, instead of "no run today": a `run_at` moved
   later the same day now runs once more, and the catch-up after downtime

@@ -7,10 +7,15 @@ profile (tests_db_logtail.py).
 import tempfile
 from pathlib import Path
 
+from datetime import datetime, timezone as tz
+from unittest import mock
+
 from django.test import SimpleTestCase
 
+from registry.models import Event
+
 from . import logtail
-from .logtail import TailState, classify, parse, read_new
+from .logtail import TailState, apply, classify, parse, read_new
 
 # Verbatim lines from the 2026-09-16 POC log (docs/review-notes, design §15).
 POC_SEGMENT = """2026-09-16 10:35:26,521 -INFO - --- pull finished -- at version v4177
@@ -75,6 +80,74 @@ class ClassifyTests(SimpleTestCase):
     def test_pull_finished_is_not_a_success(self):
         action = classify(parse("2026-09-16 10:00:00,000 -INFO - --- pull finished -- at version v7\n")[0])
         self.assertEqual(action.kind, "pull_open")   # ok stays null until the check confirms
+
+
+SERVER_MOVED = "2026-10-20 08:00:00,000 -ERROR - There are pending changes on server - need to pull them first.\n"
+PUSH_OK = "2026-10-20 08:01:00,000 -INFO - --- push finished - new project version v12\n"
+T = datetime(2026, 10, 20, 8, 0, tzinfo=tz.utc)
+
+
+class ServerMovedTests(SimpleTestCase):
+    """Review note 2026-10-20: not an error, a warning only when it keeps
+    happening while local edits wait and could be pushed."""
+
+    def setUp(self):
+        self.events = mock.patch("supervisor.logtail.events").start()
+        self.runs = mock.patch("supervisor.logtail.SyncRun").start()
+        self.facts = mock.patch("supervisor.logtail.project_facts", return_value=(["punkter"], False)).start()
+        self.addCleanup(mock.patch.stopall)
+        self.project = object()
+
+    def levels(self):
+        return [call.args[1] for call in self.events.record.call_args_list]
+
+    def feed(self, text, state=None):
+        state = state or TailState()
+        actions = [a for a in (classify(r) for r in parse(text)) if a is not None]
+        apply(self.project, actions, state, now=T)
+        return state
+
+    def test_classified_as_server_moved(self):
+        action = classify(parse(SERVER_MOVED)[0])
+        self.assertEqual(action.kind, "server_moved")
+
+    def test_one_is_info(self):
+        state = self.feed(SERVER_MOVED)
+        self.assertEqual(self.levels(), [Event.Level.INFO])
+        self.assertIn("server moved during the cycle; retried next cycle", self.events.record.call_args.args[2])
+        self.assertEqual(state.server_moved_streak, 1)
+
+    def test_five_in_a_row_with_pending_changes_warn_once(self):
+        self.feed(SERVER_MOVED * 7)
+        self.assertEqual(self.levels(), [Event.Level.INFO, Event.Level.WARNING])   # repeats collapsed, one warning
+        warning = self.events.record.call_args_list[1].args[2]
+        self.assertIn("5 consecutive cycles", warning)
+        self.assertIn("punkter", warning)
+
+    def test_one_way_project_stays_info(self):
+        self.facts.return_value = (["punkter"], True)
+        self.feed(SERVER_MOVED * 5)
+        self.assertEqual(self.levels(), [Event.Level.INFO])
+
+    def test_no_pending_changes_stays_info(self):
+        self.facts.return_value = ([], False)
+        self.feed(SERVER_MOVED * 5)
+        self.assertEqual(self.levels(), [Event.Level.INFO])
+
+    def test_a_push_resets_the_streak(self):
+        state = self.feed(SERVER_MOVED * 4)
+        state = self.feed(PUSH_OK, state)
+        self.assertEqual(state.server_moved_streak, 0)
+        self.feed(SERVER_MOVED * 4, state)
+        self.assertEqual(self.levels(), [Event.Level.INFO])
+        self.facts.assert_not_called()
+
+    def test_repeats_are_collapsed_across_levels(self):
+        state = self.feed(SERVER_MOVED * 3)
+        self.assertEqual(state.suppressed, 2)
+        self.feed("2026-10-20 08:05:00,000 -ERROR - something else\n", state)
+        self.assertEqual(self.levels(), [Event.Level.INFO, Event.Level.ERROR])
+        self.assertIn("(previous message repeated 2 more times)", self.events.record.call_args.args[2])
 
 
 class ReadNewTests(SimpleTestCase):

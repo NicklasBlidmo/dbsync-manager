@@ -13,8 +13,15 @@ from django.test import SimpleTestCase
 
 from registry.models import SyncProject, SyncStatus
 
+from unittest import mock
+
+from django.test import override_settings
+from django.utils import timezone as dj_tz
+
 from . import mergin_api
-from .check import PENDING_KEY, Observed, direction_of, evaluate, gpkg_counts, gpkg_tables, select_tables, worst
+from .check import (PENDING_KEY, Observed, direction_of, evaluate, gpkg_counts, gpkg_tables, is_transient_api_error,
+                    select_tables, worst)
+from .core import PS, Runtime, Supervisor
 
 H = SyncProject.Health
 D = SyncStatus.Direction
@@ -49,6 +56,115 @@ class Harness:
             self.status, obs, now=at(minutes), check_interval=INTERVAL, stuck_after=STUCK_AFTER,
             process_running=self.process_running, label="1-punkter.gpkg",
         )
+
+
+class MerginUnreachableTests(SimpleTestCase):
+    """Review note 2026-10-20: outages are a condition with a delayed mail,
+    not an error per cycle; configuration errors stay errors."""
+
+    def test_transient_versus_configuration_errors(self):
+        for text in ("HTTP Error: 503 Service Unavailable", "upstream connect error or disconnect/reset before headers",
+                     "Connection refused", "connection reset by peer", "The read operation timed out", "502 Bad Gateway",
+                     "504 Gateway Time-out", "Temporary failure in name resolution"):
+            self.assertTrue(is_transient_api_error(Exception(text)), text)
+        for text in ("HTTP Error: 401 Unauthorized", "403 Forbidden", "404 Not Found", "Detail: project not found",
+                     "something odd happened"):
+            self.assertFalse(is_transient_api_error(Exception(text)), text)
+
+        class ClientError(Exception):
+            def __init__(self, code):
+                super().__init__("error")
+                self.http_error = code
+
+        self.assertTrue(is_transient_api_error(ClientError(503)))
+        self.assertFalse(is_transient_api_error(ClientError(404)))
+
+    def test_unreachable_keeps_the_last_server_facts(self):
+        h = Harness()
+        h.check(observed(), 0)
+        health, conds, _ = h.check(observed(server_version=None, mergin_permission=None,
+                                            mergin_unreachable="Mergin API: 503"), 5)
+        self.assertEqual(health, H.OK)
+        self.assertEqual(conds, set())
+        self.assertEqual(h.status.server_version, 10)
+        self.assertEqual(h.status.direction, D.ONE_WAY)
+        self.assertEqual(h.status.last_ok_check_at, at(5))
+
+
+@override_settings(DBSYNC_CHECK_INTERVAL=INTERVAL, DBSYNC_STUCK_AFTER=STUCK_AFTER, DBSYNC_MERGIN_DOWN_ALERT_AFTER=900)
+class MerginUnreachableFlowTests(SimpleTestCase):
+    """The condition through _reconcile, registry writes stubbed."""
+
+    def setUp(self):
+        self.conditions = mock.patch("supervisor.core.conditions").start()
+        self.check = mock.patch("supervisor.core.check.run_project_check").start()
+        mock.patch("supervisor.core.logtail.close_confirmed_pulls", return_value=0).start()
+        mock.patch("supervisor.core.hooks.pending_requests", return_value=[]).start()
+        mock.patch("supervisor.core.events").start()
+        for target in ("_set_state", "_maybe_post_pull", "_project_db_version"):
+            mock.patch.object(Supervisor, target).start()
+        self.addCleanup(mock.patch.stopall)
+        self.project = SyncProject(pk=3, mergin_project="ak/x", schema_prefix="x",
+                                   desired_state=SyncProject.DesiredState.PAUSED, process_state=PS.STOPPED,
+                                   health=H.OK, active_conditions={})
+        conns = [mock.Mock(sync_file="1-punkter.gpkg")]
+        mock.patch.object(SyncProject, "connections", new_callable=mock.PropertyMock,
+                          return_value=mock.Mock(all=mock.Mock(return_value=conns))).start()
+        self.supervisor = Supervisor(1)
+        self.rt = Runtime()
+        self.supervisor.runtimes[self.project.pk] = self.rt
+
+    def tick(self, down):
+        self.check.return_value = (H.OK, {"mergin_unreachable"} if down else set(),
+                                   {"mergin_unreachable": "Mergin API: 503"} if down else {})
+        self.rt.last_check_at = 0
+        self.supervisor._reconcile(self.project)
+
+    def since(self, seconds_ago):
+        self.project.active_conditions = {"mergin_unreachable": (dj_tz.now() - timedelta(seconds=seconds_ago)).isoformat(timespec="seconds")}
+
+    def test_set_without_mail_then_mail_after_threshold_then_resolve_with_duration(self):
+        self.tick(down=True)
+        self.conditions.activate.assert_called_once()
+        self.assertEqual(self.conditions.activate.call_args.kwargs["mail"], False)
+        self.assertIn("unreachable", self.conditions.activate.call_args.args[2])
+        self.conditions.alert.assert_not_called()
+        # Still down, 100 s later: no mail yet.
+        self.since(100)
+        self.tick(down=True)
+        self.conditions.alert.assert_not_called()
+        # Down for 16 minutes: one mail, and only one.
+        self.since(960)
+        self.tick(down=True)
+        self.tick(down=True)
+        self.conditions.alert.assert_called_once()
+        self.assertIn("16 min", self.conditions.alert.call_args.args[2])
+        # Back: resolved with the duration and the recovery mail.
+        self.tick(down=False)
+        self.conditions.resolve.assert_called_once()
+        self.assertEqual(self.conditions.resolve.call_args.kwargs["mail"], True)
+        self.assertIn("reachable again after 16 min", self.conditions.resolve.call_args.args[2])
+        self.assertIsNone(self.rt.mergin_alerted)
+
+    def test_short_outage_resolves_without_any_mail(self):
+        self.tick(down=True)
+        self.since(300)
+        self.tick(down=False)
+        self.conditions.alert.assert_not_called()
+        self.assertEqual(self.conditions.resolve.call_args.kwargs["mail"], False)
+        self.assertIn("5 min 0 s", self.conditions.resolve.call_args.args[2])
+        # Nothing active: a good check changes nothing.
+        self.project.active_conditions = {}
+        self.tick(down=False)
+        self.conditions.resolve.assert_called_once()
+
+    def test_adopted_mid_outage_assumes_the_mail_went_out(self):
+        self.since(2000)
+        self.tick(down=True)                 # a previous supervisor set it 33 min ago
+        self.conditions.alert.assert_not_called()
+        self.tick(down=False)
+        self.assertEqual(self.conditions.resolve.call_args.kwargs["mail"], True)
+        self.conditions.apply.assert_called()   # the check's own conditions are still managed
 
 
 class HealthTests(SimpleTestCase):

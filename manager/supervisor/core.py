@@ -20,7 +20,7 @@ import signal
 import threading
 import time
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from django.conf import settings
 from django.db import DatabaseError, connection
@@ -82,6 +82,9 @@ class Runtime:
     # A project hook running in a worker thread (slice 13); the tick reaps it.
     hook_job: hooks.HookJob | None = None
     hook_job_kind: str = ""                 # "post_init", "post_pull" or "manual:<kind>"
+    # mergin_unreachable: whether the delayed alert mail went out. None =
+    # unknown (adopted mid-outage): assumed from the condition's age.
+    mergin_alerted: bool | None = None
 
 
 class Supervisor:
@@ -692,6 +695,12 @@ class Supervisor:
         )
         health, wanted, messages = check.run_project_check(project, process_running=process_running)
 
+        # A Mergin outage is a condition with a delayed mail, not an error per
+        # cycle (review note 2026-10-20); conditions.apply does not manage it.
+        down = "mergin_unreachable" in wanted
+        wanted.discard("mergin_unreachable")
+        self._track_mergin(project, rt, down, messages.get("mergin_unreachable", ""))
+
         # Stuck: one automatic restart first; alert only if still stuck later.
         if "stuck" in wanted:
             if rt.stuck_restart_at is None:
@@ -718,6 +727,32 @@ class Supervisor:
             log.info("check: %s confirmed %d pull run(s)", project, confirmed)
         log.info("check: %s health=%s conditions=%s", project, health, sorted(wanted) or "-")
 
+    def _track_mergin(self, project, rt, down: bool, message: str):
+        """Condition mergin_unreachable: set on the first transient API failure
+        (an info event, no mail), mailed once it has been active for
+        DBSYNC_MERGIN_DOWN_ALERT_AFTER, cleared on the next success with the
+        duration (and a mail only if one went out)."""
+        key = "mergin_unreachable"
+        since = _parse_iso((project.active_conditions or {}).get(key))
+        threshold = settings.DBSYNC_MERGIN_DOWN_ALERT_AFTER
+        if down:
+            if since is None:
+                conditions.activate(project, key, f"Mergin server unreachable: {message}",
+                                    level=Event.Level.INFO, mail=False)
+                rt.mergin_alerted = False
+                return
+            age = (timezone.now() - since).total_seconds()
+            if rt.mergin_alerted is None:
+                rt.mergin_alerted = age >= threshold   # adopted mid-outage: the previous supervisor mailed
+            if not rt.mergin_alerted and age >= threshold:
+                rt.mergin_alerted = True
+                conditions.alert(project, key, f"Mergin server unreachable for {_duration(age)}: {message}")
+        elif since is not None:
+            age = (timezone.now() - since).total_seconds()
+            mailed = rt.mergin_alerted if rt.mergin_alerted is not None else age >= threshold
+            conditions.resolve(project, key, f"Mergin server reachable again after {_duration(age)}", mail=bool(mailed))
+            rt.mergin_alerted = None
+
     # --- helpers -------------------------------------------------------------
 
     @staticmethod
@@ -727,6 +762,25 @@ class Supervisor:
         project.process_state = state
         project.process_reason = reason
         SyncProject.objects.filter(pk=project.pk).update(process_state=state, process_reason=reason)
+
+
+def _parse_iso(text):
+    if not text:
+        return None
+    try:
+        value = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return value if timezone.is_aware(value) else timezone.make_aware(value)
+
+
+def _duration(seconds: float) -> str:
+    seconds = int(seconds)
+    if seconds < 60:
+        return f"{seconds} s"
+    if seconds < 3600:
+        return f"{seconds // 60} min {seconds % 60} s"
+    return f"{seconds // 3600} h {seconds % 3600 // 60} min"
 
 
 class SupervisorIO:
