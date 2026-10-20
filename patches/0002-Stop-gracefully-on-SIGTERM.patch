@@ -1,0 +1,133 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nicklas Blidmo <nicklas.blidmo@gmail.com>
+Date: Tue, 20 Oct 2026 18:00:00 +0000
+Subject: [PATCH] Stop gracefully on SIGTERM: finish the current pull or push first
+
+The daemon had no SIGTERM handling, so the default disposition ended the
+process wherever it was. A pull that dies between "GeoPackage updated" and
+"base schema updated" leaves a checkout that is no longer in sync with the
+database, and the next start refuses with "'base' schema is not synchronized
+with source GPKG" until --force-init re-creates everything. Any container
+stop or recreate while a project is mid-pull did this.
+
+The daemon now installs a SIGTERM handler that only sets a flag. The
+connection loops in dbsync_pull()/dbsync_push() check it before each
+connection, the main loop checks it before pull and before push, and the
+sleep between cycles polls it once a second. The process exits 0 at the
+next boundary; a pull or push that has started always completes. SIGINT
+keeps its default so ctrl+c still kills.
+
+Applied by dbsync-manager at image build (patches/); offered upstream.
+---
+ dbsync.py        | 27 +++++++++++++++++++++++++++
+ dbsync_daemon.py | 17 ++++++++++++++++-
+ 2 files changed, 43 insertions(+), 1 deletion(-)
+
+diff --git a/dbsync.py b/dbsync.py
+index 30e0792..4d4169d 100644
+--- a/dbsync.py
++++ b/dbsync.py
+@@ -52,6 +52,26 @@ os.environ["GEODIFF_LOGGER_LEVEL"] = "4"  # 0 = nothing, 1 = errors, 2 = warning
+ 
+ FORCE_INIT_MESSAGE = "Running `dbsync_deamon.py` with `--force-init` should fix the issue."
+ 
++# --- cooperative stop ---------------------------------------------------------
++# A SIGTERM used to end the process wherever it was, also between "GeoPackage
++# updated" and "base schema updated" inside pull(), which leaves a checkout
++# that only --force-init repairs. The daemon installs request_stop() as the
++# SIGTERM handler; the connection loops below and the daemon's sleep check
++# stop_requested() and the process exits 0 at the next boundary. A pull or
++# push that has started always completes.
++_stop_requested = False
++
++
++def request_stop(signum=None, frame=None):
++    """Signal handler and plain function: ask the loops to stop at the next boundary."""
++    global _stop_requested
++    _stop_requested = True
++    logging.info(f"stop requested (signal {signum}); finishing the current operation first")
++
++
++def stop_requested() -> bool:
++    return _stop_requested
++
+ 
+ class DbSyncError(Exception):
+     default_print_password = "password='*****'"
+@@ -1443,6 +1463,9 @@ def dbsync_init(mc):
+ 
+ def dbsync_pull(mc):
+     for conn in config.connections:
++        if stop_requested():
++            logging.info("stop requested; not pulling the remaining connections")
++            return
+         pull(conn, mc)
+ 
+     logging.debug("Pull done!")
+@@ -1450,6 +1473,9 @@ def dbsync_pull(mc):
+ 
+ def dbsync_push(mc):
+     for conn in config.connections:
++        if stop_requested():
++            logging.info("stop requested; not pushing the remaining connections")
++            return
+         push(conn, mc)
+ 
+     logging.debug("Push done!")
+diff --git a/dbsync_daemon.py b/dbsync_daemon.py
+index 64cc932..a6219d5 100644
+--- a/dbsync_daemon.py
++++ b/dbsync_daemon.py
+@@ -10,6 +10,7 @@ import os
+ import pathlib
+ import platform
+ import pprint
++import signal
+ import sys
+ import time
+ 
+@@ -105,6 +106,10 @@ def main():
+ 
+     args = parser.parse_args()
+ 
++    # Stop at the next boundary instead of wherever the process happens to
++    # be (see dbsync.request_stop). SIGINT keeps its default: ctrl+c kills.
++    signal.signal(signal.SIGTERM, dbsync.request_stop)
++
+     if args.log_file:
+         log_file = pathlib.Path(args.log_file)
+         setup_logger(log_file, args.log_verbosity)
+@@ -179,12 +184,20 @@ def main():
+         last_email_sent = None
+ 
+         while True:
++            if dbsync.stop_requested():
++                logging.info("stop requested; exiting cleanly between cycles")
++                sys.exit(0)
++
+             print(datetime.datetime.now())
+ 
+             try:
+                 logging.debug("Trying to pull")
+                 dbsync.dbsync_pull(mc)
+ 
++                if dbsync.stop_requested():
++                    logging.info("stop requested; exiting cleanly after pull")
++                    sys.exit(0)
++
+                 logging.debug("Trying to push")
+                 dbsync.dbsync_push(mc)
+ 
+@@ -209,7 +222,11 @@ def main():
+                         last_email_sent = datetime.datetime.now()
+ 
+             logging.debug("Going to sleep")
+-            time.sleep(sleep_time)
++            # One-second steps so a stop request ends the sleep early.
++            for _ in range(sleep_time):
++                if dbsync.stop_requested():
++                    break
++                time.sleep(1)
+ 
+ 
+ if __name__ == "__main__":

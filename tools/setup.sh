@@ -387,6 +387,8 @@ next_steps=""
 say ""
 say "Done. Compose project '$COMPOSE_PROJECT_NAME' on port $HTTP_PORT: open http://$first_host:$HTTP_PORT/ and log in."
 say "Manage this installation from $here; 'docker compose' commands run elsewhere do not affect it."
+say "Stopping or recreating the container takes up to two and a half minutes: every daemon finishes"
+say "its current pull or push first (stop_grace_period in docker-compose.yml). Do not shorten it."
 if [ "$PROFILE" = postgis ]; then
     say ""
     say "First Settings -> Databases row (the bundled PostGIS, created at first start):"

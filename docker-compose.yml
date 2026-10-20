@@ -20,6 +20,11 @@ services:
     image: dbsync-manager:local
     restart: unless-stopped
     env_file: .env
+    # A stop waits for the supervisor, which waits for every daemon to finish
+    # its current pull or push (up to 120 s). Docker's default of 10 s
+    # SIGKILLed daemons mid-pull and left checkouts that only Re-init repairs
+    # (review note 2026-10-20b).
+    stop_grace_period: 150s
     ports:
       # Address and port on the host come from .env; 8080 is a common default
       # and is often taken on a server that runs anything else.

@@ -17,7 +17,7 @@
         {% else %}
         <form class="inline" method="post" action="{% url 'project_action' project.pk 'resume' %}">{% csrf_token %}<button type="submit">Resume</button></form>
         {% endif %}
-        <a class="button" href="{% url 'project_operation' project.pk 'reinit' %}">Re-init</a>
+        <a class="button{% if needs_reinit %} primary{% endif %}" href="{% url 'project_operation' project.pk 'reinit' %}"{% if needs_reinit %} title="the checkout and the database no longer agree; Re-init rebuilds the sync schemas from Mergin"{% endif %}>Re-init</a>
         <a class="button" href="{% url 'project_operation' project.pk 'remove' %}">Remove</a>
         {% endif %}
       </span>
@@ -25,7 +25,7 @@
   </div>
   {% if project.process_reason %}<pre class="pre-short mt-2">{{ project.process_reason }}</pre>{% endif %}
   {% for key, since in active_conditions %}
-    <div class="notice {% if 'divergence' in key or 'stranded' in key or 'stuck' in key or 'crashed' in key %}bad{% else %}warn{% endif %}">
+    <div class="notice {% if 'divergence' in key or 'stranded' in key or 'stuck' in key or 'crashed' in key or 'inconsistent' in key or 'missing' in key or 'auth' in key %}bad{% else %}warn{% endif %}">
       <strong>{{ key|condition_label }}</strong> <span class="muted" title="{{ since|isotime:'Y-m-d H:i:s' }}">active since {{ since|ago }}</span>
     </div>
   {% endfor %}

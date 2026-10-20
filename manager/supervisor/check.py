@@ -36,7 +36,20 @@ log = logging.getLogger("supervisor.check")
 Health = SyncProject.Health
 Direction = SyncStatus.Direction
 
-HEALTH_ORDER = [Health.DIVERGED, Health.BEHIND, Health.STUCK, Health.STALE, Health.UNKNOWN, Health.CATCHING_UP, Health.OK]
+HEALTH_ORDER = [Health.FAILED, Health.DIVERGED, Health.BEHIND, Health.STUCK, Health.STALE, Health.UNKNOWN,
+                Health.CATCHING_UP, Health.OK]
+
+# Conditions the supervisor raises when the daemon would fail the same way on
+# every start (supervisor/exits.py); the check reports them as health `failed`.
+DETERMINISTIC_CONDITIONS = ("checkout_inconsistent", "database_missing_postgis")
+
+
+def health_with_conditions(health, active_conditions):
+    """A deterministic daemon failure is health `failed`, whatever the counts say
+    (review note 2026-10-20b, finding 2). The check stays the only writer of health."""
+    if any(key in (active_conditions or {}) for key in DETERMINISTIC_CONDITIONS):
+        return Health.FAILED
+    return health
 
 # Key in mismatch_streak that counts consecutive checks with modified != base
 # while versions are equal (the stranded-edits rule); table names cannot
@@ -456,7 +469,7 @@ def run_project_check(project, *, process_running: bool, now=None):
         conditions.add("mergin_unreachable")
         messages["mergin_unreachable"] = unreachable
 
-    health = worst(healths)
+    health = health_with_conditions(worst(healths), project.active_conditions)
     if health != project.health:
         SyncProject.objects.filter(pk=project.pk).update(health=health, health_since=now)
         project.health = health

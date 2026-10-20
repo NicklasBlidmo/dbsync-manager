@@ -78,8 +78,18 @@
   </div>
 </details>
 
-<details class="section"{% if events_open %} open{% endif %}>
-  <summary class="section-title">Events <span class="muted">· {{ events|length }}{% if events_latest %} · latest {{ events_latest|date:"H:i:s" }}{% endif %}</span></summary>
+<details class="section" id="events"{% if events_open %} open{% endif %}>
+  <summary class="section-title">Events <span class="muted">· {{ events_page.paginator.count }}{% if events_latest %} · latest {{ events_latest|date:"H:i:s" }}{% endif %}{% if events_page.paginator.num_pages > 1 %} · page {{ events_page.number }} of {{ events_page.paginator.num_pages }}{% endif %}</span></summary>
+  <form class="filters" method="get" action="{% url 'project' project.pk %}#events">
+    <label>From <input type="datetime-local" name="since" value="{{ events_filters.since }}"></label>
+    <label>To <input type="datetime-local" name="until" value="{{ events_filters.until }}"></label>
+    <label>Level <select name="level"><option value="">all</option>
+      {% for value, label in level_choices %}<option value="{{ value }}"{% if events_filters.level == value %} selected{% endif %}>{{ label }}</option>{% endfor %}
+    </select></label>
+    <button type="submit">Filter</button>
+    {% if events_filters.since or events_filters.until or events_filters.level %}<a class="muted" href="{% url 'project' project.pk %}#events">Reset</a>{% endif %}
+    <span class="muted">· older history: <code>manage.py events --project {{ project.pk }} --since &lt;date&gt;</code></span>
+  </form>
   <table class="table">
     <thead><tr><th>When</th><th>Level</th><th>Source</th><th>Message</th><th>Condition</th></tr></thead>
     <tbody>
@@ -92,9 +102,16 @@
         <td class="muted">{% if event.condition %}{{ event.condition|condition_label }}{% endif %}</td>
       </tr>
     {% empty %}
-      <tr><td colspan="5" class="muted">No events yet.</td></tr>
+      <tr><td colspan="5" class="muted">{% if events_filters.since or events_filters.until or events_filters.level %}No events match the filter.{% else %}No events yet.{% endif %}</td></tr>
     {% endfor %}
     </tbody>
   </table>
+  {% if events_page.has_previous or events_page.has_next %}
+  <p class="muted">
+    {% if events_page.has_previous %}<a href="?{{ events_query }}page={{ events_page.previous_page_number }}#events">newer</a>{% endif %}
+    page {{ events_page.number }} of {{ events_page.paginator.num_pages }}
+    {% if events_page.has_next %}<a href="?{{ events_query }}page={{ events_page.next_page_number }}#events">older</a>{% endif %}
+  </p>
+  {% endif %}
 </details>
 {% endblock %}

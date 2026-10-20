@@ -71,6 +71,17 @@ Invariants learned the hard way:
   `Supervisor.scheduled_jobs`. Tests that drive a hook through
   `_reconcile` call it once to start, `hooks.wait_for_jobs`, then once
   to reap (tests_hooks.PostInitFlowTests.reconcile).
+- A daemon is never killed mid-pull: patch `0002` makes db-sync exit at the
+  next connection boundary on SIGTERM, `STOP_GRACE`/`SHUTDOWN_GRACE` are
+  120 s and `docker-compose.yml` has `stop_grace_period: 150s`. A pull
+  killed between "GeoPackage updated" and "base schema updated" leaves a
+  checkout only Re-init repairs (incident 2026-10-20b). `patches/` holds
+  the upstream 2.3.0 sources and the `*.patched` results;
+  `supervisor/tests_patches.py` applies the patches as the Dockerfile does
+  and fails if they drift.
+- db-sync exits are classified (`supervisor/exits.py`): deterministic ones
+  are not restarted (condition, health `failed`), Mergin connectivity ones
+  feed `mergin_unreachable`; only the rest count towards `process_crashed`.
 - db-sync's own init adopts existing schemas whose base comment names the
   project (downloads `db_version`, compares base with the GeoPackage). The
   manager's `add` relies on that; it never re-implements init.

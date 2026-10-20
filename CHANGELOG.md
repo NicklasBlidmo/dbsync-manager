@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- Graceful stop (review note 2026-10-20b, finding 1): patch `0002` gives
+  db-sync a SIGTERM handler; a daemon finishes its current pull or push
+  and exits 0 at the next boundary. `STOP_GRACE` and the shutdown wait
+  are 120 s, `docker-compose.yml` sets `stop_grace_period: 150s`, and
+  every project gets "stopping" and "stopped cleanly / killed" events.
+  `patches/upstream/` and `patches/*.patched` with a test that applies
+  the patches as the Dockerfile does.
+- A deterministic daemon exit (checkout not synchronized with the
+  GeoPackage, missing postgis extension) is not restarted: condition
+  `checkout_inconsistent` or `database_missing_postgis` with one mail,
+  health `failed` (migration 0012), Re-init highlighted on the project
+  page (finding 2).
+- A daemon exit caused by Mergin being unreachable feeds
+  `mergin_unreachable` (delayed, grouped mail) and restarts every minute
+  instead of counting towards `process_crashed`; refused credentials
+  are `mergin_auth_failed`, one mail, restarts capped at 5 min (finding 3).
+- A crash loop that persists reminds after an hour and then daily, with
+  the restart count and the latest stderr lines (finding 4).
+- Events: date/time and level filter and paging on the project page;
+  `manage.py events --project --since [--until] [--level]` (finding 5).
+- Pause all / Resume all on the Projects page; Resume all touches only
+  the projects the last Pause all paused (finding 6).
 - Log classification after three weeks in production (review note
   2026-10-20): "There are pending changes on server" is an info event
   (the server moved between pull and push; the next cycle pulls), and a

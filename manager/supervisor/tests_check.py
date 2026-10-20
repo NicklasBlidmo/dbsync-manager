@@ -58,6 +58,17 @@ class Harness:
         )
 
 
+class FailedHealthTests(SimpleTestCase):
+    def test_deterministic_condition_makes_health_failed(self):
+        from .check import health_with_conditions
+
+        self.assertEqual(health_with_conditions(H.OK, {"checkout_inconsistent": "2026-10-20T13:07:53+00:00"}), H.FAILED)
+        self.assertEqual(health_with_conditions(H.BEHIND, {"database_missing_postgis": "x"}), H.FAILED)
+        self.assertEqual(health_with_conditions(H.OK, {"process_crashed": "x"}), H.OK)
+        self.assertEqual(health_with_conditions(H.OK, {}), H.OK)
+        self.assertEqual(worst([H.FAILED, H.DIVERGED, H.OK]), H.FAILED)
+
+
 class MerginUnreachableTests(SimpleTestCase):
     """Review note 2026-10-20: outages are a condition with a delayed mail,
     not an error per cycle; configuration errors stay errors."""

@@ -33,7 +33,7 @@ from registry import events
 from registry.crypto import SecretError
 from registry.models import Event, Hook, Operation, SyncConnection, SyncProject, SyncRun, SyncStatus
 
-from . import alerts, check, conditions, dbinspect, hooks, housekeeping, logtail, operations, processes, scheduling
+from . import alerts, check, conditions, dbinspect, exits, hooks, housekeeping, logtail, operations, processes, scheduling
 from .config_render import ConfigRenderError, render_config, write_config
 from .logs import rotate_if_needed, tail
 
@@ -49,8 +49,16 @@ BACKOFF_JITTER = 5           # seconds of random extra delay, so crashed daemons
 SPAWN_STAGGER = 1.1          # seconds between two daemon starts (geodiff seeds its temp names by the second)
 STABLE_UPTIME = 600          # a run this long resets the crash counter
 CRASH_ALERT_AFTER = 3        # consecutive crashes before condition process_crashed
-STOP_GRACE = 60              # seconds between SIGTERM and SIGKILL
-SHUTDOWN_GRACE = 10          # seconds to wait for children at supervisor shutdown
+CRASH_REMIND_FIRST = 3600    # a crash loop that persists reminds after an hour (2026-10-20b, finding 4)
+CRASH_REMIND_EVERY = 86400   # ...and then daily
+MERGIN_EXIT_DELAY = 60       # restart delay when the daemon exited because Mergin was unreachable (finding 3)
+AUTH_EXIT_BACKOFF_MAX = 300  # restart delay cap when Mergin refused the credentials
+# Stopping a daemon waits for its current pull or push: with patch 0002 it
+# exits at the next boundary, and a cycle over sixteen connections takes a
+# minute or two (2026-10-20b, finding 1). docker-compose.yml gives the
+# container stop_grace_period 150 s so Docker waits for all of this.
+STOP_GRACE = 120             # seconds between SIGTERM and SIGKILL
+SHUTDOWN_GRACE = 120         # seconds to wait for children at supervisor shutdown
 
 PS = SyncProject.ProcessState
 
@@ -85,6 +93,9 @@ class Runtime:
     # mergin_unreachable: whether the delayed alert mail went out. None =
     # unknown (adopted mid-outage): assumed from the condition's age.
     mergin_alerted: bool | None = None
+    # process_crashed reminders: when the last mail went out and how many.
+    crash_alerted_at: float | None = None
+    crash_reminders: int = 0
 
 
 class Supervisor:
@@ -161,13 +172,28 @@ class Supervisor:
         self.shutdown()
 
     def shutdown(self):
-        """Stop children so they do not outlive the container's grace period."""
+        """Stop children so they do not outlive the container's grace period.
+
+        Every daemon gets SIGTERM at once and finishes its current pull or
+        push first (patch 0002); what happened is recorded per project so
+        the next incident is visible in Events (2026-10-20b, finding 1).
+        """
         live = [(pid, rt) for pid, rt in self.runtimes.items() if rt.child and rt.child.alive]
-        for _, rt in live:
+        started = time.monotonic()
+        for project_id, rt in live:
             rt.child.terminate()
+            self._shutdown_event(project_id, "info",
+                                 f"stopping db-sync (pid {rt.child.pid}), waiting for the current cycle (up to {SHUTDOWN_GRACE} s)")
         survivors = processes.wait_for_exit([rt.child for _, rt in live], SHUTDOWN_GRACE)
         for child in survivors:
             child.kill()
+        waited = int(time.monotonic() - started)
+        for project_id, rt in live:
+            if rt.child in survivors:
+                self._shutdown_event(project_id, "error",
+                                     f"db-sync (pid {rt.child.pid}) ignored SIGTERM; killed after {waited} s, the checkout may need Re-init")
+            else:
+                self._shutdown_event(project_id, "info", f"db-sync (pid {rt.child.pid}) stopped cleanly after {waited} s")
         # Hooks got SIGTERM in _on_signal and SIGKILL after INTERRUPT_KILL_AFTER;
         # wait for their threads so the runs are recorded as interrupted.
         still = hooks.wait_for_jobs(hooks.INTERRUPT_KILL_AFTER + 5)
@@ -182,6 +208,15 @@ class Supervisor:
         except DatabaseError:
             log.warning("could not record shutdown in the registry")
         log.info("supervisor stopped (%d children stopped)", len(live))
+
+    @staticmethod
+    def _shutdown_event(project_id, level, message):
+        try:
+            project = SyncProject.objects.filter(pk=project_id).first()
+            if project is not None:
+                (events.error if level == "error" else events.info)(project, message)
+        except DatabaseError:
+            log.warning("could not record shutdown event for project %s", project_id)
 
     # --- paths ---------------------------------------------------------------
 
@@ -321,8 +356,12 @@ class Supervisor:
         else:
             if rt.child is not None:
                 self._stop(project, rt, now)
-            elif project.process_state != PS.STOPPED:
-                self._set_state(project, PS.STOPPED, "")
+            else:
+                # Paused: a later Resume starts at once, also after a
+                # deterministic failure the operator has repaired by hand.
+                rt.next_start_at = 0.0
+                if project.process_state != PS.STOPPED:
+                    self._set_state(project, PS.STOPPED, "")
 
         self._maybe_check(project, rt, now)
 
@@ -656,25 +695,68 @@ class Supervisor:
             events.error(project, f"db-sync stopped: {reason}")
             return
 
+        code_text = f"exit code {code}" if code is not None else "exit (adopted process, code unknown)"
+        last_lines = tail(paths["stderr"], lines=15)
+        stderr_block = ("\n--- last stderr lines ---\n" + last_lines) if last_lines else ""
+        kind = exits.classify_exit(last_lines)
+
+        if kind is not None and kind.deterministic:
+            # Would fail the same way on every start (2026-10-20b, finding 2):
+            # no restart, one condition with one mail, health `failed` from
+            # the next check. Re-init (or Pause/Resume after a repair) clears it.
+            rt.next_start_at = float("inf")
+            self._set_state(project, PS.CRASHED, f"{code_text}; not restarted: {kind.advice}{stderr_block}")
+            message = f"db-sync exited ({code_text}) and would fail the same way on every start: {kind.advice}"
+            if last_lines:
+                message += "\n" + last_lines
+            if not conditions.activate(project, kind.condition, message, level=Event.Level.ERROR):
+                events.error(project, message)
+            log.error("db-sync for %s exited (%s); not restarted: %s", project, code_text, kind.condition)
+            return
+
+        if kind is not None and kind.condition == exits.MERGIN_UNREACHABLE:
+            # The server, not the daemon (finding 3): the check's delayed,
+            # grouped alert; retry every minute; no crash counting.
+            delay = MERGIN_EXIT_DELAY
+            rt.next_start_at = now + delay + random.uniform(0, BACKOFF_JITTER)
+            retry_at = (timezone.now() + timedelta(seconds=delay)).strftime("%H:%M:%S")
+            self._set_state(project, PS.CRASHED, f"{code_text}; Mergin unreachable; restart at {retry_at}{stderr_block}")
+            last_line = last_lines.strip().splitlines()[-1] if last_lines.strip() else kind.advice
+            self._track_mergin(project, rt, True, f"db-sync exited ({code_text}): {last_line}")
+            log.warning("db-sync for %s exited (%s): Mergin unreachable; restart in %ss", project, code_text, delay)
+            return
+
         if now - rt.last_start_at >= STABLE_UPTIME:
             rt.crashes = 0
         rt.crashes += 1
         delay = backoff_delay(rt.crashes)
+        auth_failed = kind is not None and kind.condition == exits.MERGIN_AUTH_FAILED
+        if auth_failed:
+            delay = min(delay, AUTH_EXIT_BACKOFF_MAX)
         # Jitter breaks the lock-step of daemons that crashed together.
         rt.next_start_at = now + delay + random.uniform(0, BACKOFF_JITTER)
         retry_at = (timezone.now() + timedelta(seconds=delay)).strftime("%H:%M:%S")
-        code_text = f"exit code {code}" if code is not None else "exit (adopted process, code unknown)"
-        last_lines = tail(paths["stderr"], lines=15)
-        reason = f"{code_text}; consecutive crashes: {rt.crashes}; restart at {retry_at}"
-        if last_lines:
-            reason += "\n--- last stderr lines ---\n" + last_lines
-        self._set_state(project, PS.CRASHED, reason)
+        self._set_state(project, PS.CRASHED, f"{code_text}; consecutive crashes: {rt.crashes}; restart at {retry_at}{stderr_block}")
 
         message = f"db-sync exited unexpectedly ({code_text}); restarting in {delay}s"
         if last_lines:
             message += "\n" + last_lines
-        if rt.crashes == CRASH_ALERT_AFTER:
+        if auth_failed:
+            # A configuration error: one mail, no process_crashed on top.
+            text = f"db-sync exited ({code_text}): {kind.advice}" + ("\n" + last_lines if last_lines else "")
+            if not conditions.activate(project, exits.MERGIN_AUTH_FAILED, text, level=Event.Level.ERROR):
+                events.error(project, message)
+        elif rt.crashes == CRASH_ALERT_AFTER:
             conditions.activate(project, "process_crashed", message, level=Event.Level.ERROR)
+            rt.crash_alerted_at = now
+            rt.crash_reminders = 0
+        elif (rt.crashes > CRASH_ALERT_AFTER and rt.crash_alerted_at is not None
+              and now - rt.crash_alerted_at >= (CRASH_REMIND_FIRST if rt.crash_reminders == 0 else CRASH_REMIND_EVERY)):
+            # The loop persists (finding 4): remind after an hour, then daily.
+            rt.crash_alerted_at = now
+            rt.crash_reminders += 1
+            conditions.alert(project, "process_crashed",
+                             f"still crashing: {rt.crashes} consecutive restarts; latest: {message}")
         else:
             events.error(project, message)
         log.warning("db-sync for %s exited (%s); restart in %ss", project, code_text, delay)
@@ -720,9 +802,15 @@ class Supervisor:
 
         conditions.apply(project, wanted, messages)
 
-        # A crash loop resolves once the daemon has stayed up for a check interval.
+        # A crash loop resolves once the daemon has stayed up for a check
+        # interval; so do the exit conditions of supervisor/exits.py.
         if process_running and now - rt.last_start_at >= settings.DBSYNC_CHECK_INTERVAL:
-            conditions.resolve(project, "process_crashed", "resolved: db-sync has stayed up")
+            if conditions.resolve(project, "process_crashed", "resolved: db-sync has stayed up"):
+                rt.crash_alerted_at = None
+                rt.crash_reminders = 0
+            conditions.resolve(project, exits.MERGIN_AUTH_FAILED, "resolved: db-sync logged in and has stayed up")
+            for key in exits.DETERMINISTIC_CONDITIONS:
+                conditions.resolve(project, key, "resolved: db-sync has stayed up")
 
         self._maybe_post_pull(project, rt)
         # Pull runs are confirmed by the database, never by a log line (§6).

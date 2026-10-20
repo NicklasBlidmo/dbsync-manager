@@ -8,6 +8,7 @@ BADGE_CLASSES = {
     # process
     "stopped": "muted", "initializing": "info", "stopping": "info", "crashed": "bad", "blocked": "bad",
     # health
+    "failed": "bad",
     "unknown": "muted", "ok": "ok", "catching_up": "info", "stale": "warn",
     "behind": "warn", "diverged": "bad", "stuck": "bad",
     # direction

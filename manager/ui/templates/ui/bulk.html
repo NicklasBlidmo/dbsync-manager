@@ -1,0 +1,21 @@
+{% extends "ui/base.html" %}
+{% block title %}{{ title }} · dbsync-manager{% endblock %}
+{% block content %}
+<h1 class="page-title">{{ title }}</h1>
+<p class="page-subtitle">{{ subtitle }}</p>
+{% if projects %}
+<form method="post" action="{{ action_url }}" class="panel">{% csrf_token %}
+  <p>{{ lead }}</p>
+  <ul>
+    {% for project in projects %}<li>{{ project.mergin_project }} <span class="muted">({{ project.process_state }}, {{ project.get_health_display }})</span></li>{% endfor %}
+  </ul>
+  {% if skipped %}<p class="muted">Not touched: {% for p in skipped %}{{ p.mergin_project }}{% if not forloop.last %}, {% endif %}{% endfor %} ({{ skipped_why }}).</p>{% endif %}
+  <div class="actions"><button type="submit" class="primary">{{ button }}</button> <a class="button" href="{% url 'home' %}">Cancel</a></div>
+</form>
+{% else %}
+<div class="panel">
+  <p class="muted">{{ empty }}</p>
+  <p><a class="button" href="{% url 'home' %}">Back to projects</a></p>
+</div>
+{% endif %}
+{% endblock %}

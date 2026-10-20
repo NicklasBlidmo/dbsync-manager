@@ -241,6 +241,7 @@ class SyncProject(OwnedModel):
     class Health(models.TextChoices):
         """Written by the consistency check only (§6 step 5). Order = severity."""
 
+        FAILED = "failed", "failed"          # the daemon cannot run until someone acts (Re-init, DBA)
         DIVERGED = "diverged", "diverged"
         BEHIND = "behind", "behind"
         STUCK = "stuck", "stuck"

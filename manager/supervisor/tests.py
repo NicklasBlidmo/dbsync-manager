@@ -14,11 +14,11 @@ import yaml
 from django.test import SimpleTestCase, override_settings
 
 from registry import crypto
-from registry.models import Database, MerginAccount, SyncConnection, SyncProject
+from registry.models import Database, Event, MerginAccount, SyncConnection, SyncProject
 
 from . import processes
 from .config_render import ConfigRenderError, WORKING_SUBDIR, render_config, write_config
-from .core import BACKOFF_MAX, backoff_delay
+from .core import BACKOFF_JITTER, BACKOFF_MAX, backoff_delay
 from .logs import rotate_if_needed, tail
 
 KEY = crypto.generate_key()
@@ -205,6 +205,137 @@ def paused_project(pk=7, process_state=PS.RUNNING):
         pk=pk, mergin_project="ak/x", schema_prefix="x",
         desired_state=SyncProject.DesiredState.PAUSED, process_state=process_state,
     )
+
+
+class DeadChild:
+    """A child that has already exited."""
+
+    def __init__(self, exit_code=1, pid=777):
+        self.alive = False
+        self.pid = pid
+        self.exit_code = exit_code
+
+    def terminate(self):
+        pass
+
+    def kill(self):
+        pass
+
+
+def running_project(pk=9):
+    return SyncProject(
+        pk=pk, mergin_project="ak/y", schema_prefix="y",
+        desired_state=SyncProject.DesiredState.RUNNING, process_state=PS.RUNNING, active_conditions={},
+    )
+
+
+class ExitClassificationTests(SimpleTestCase):
+    def test_classify_exit(self):
+        from . import exits
+
+        kind = exits.classify_exit("DbSyncError: The db schemas already exist but 'base' schema is not synchronized "
+                                   "with source GPKG. Running `dbsync_deamon.py` with `--force-init` should fix the issue.")
+        self.assertEqual((kind.condition, kind.deterministic), ("checkout_inconsistent", True))
+        kind = exits.classify_exit("Cannot find or activate postgis extension")
+        self.assertEqual((kind.condition, kind.deterministic), ("database_missing_postgis", True))
+        kind = exits.classify_exit("mergin.common.LoginError: <urlopen error [Errno -2] Name or service not known>")
+        self.assertEqual((kind.condition, kind.deterministic), ("mergin_unreachable", False))
+        kind = exits.classify_exit("urllib.error.HTTPError: HTTP Error 503: Service Unavailable")
+        self.assertEqual(kind.condition, "mergin_unreachable")
+        kind = exits.classify_exit("mergin.common.LoginError: HTTP Error 401: Unauthorized")
+        self.assertEqual(kind.condition, "mergin_auth_failed")
+        self.assertIsNone(exits.classify_exit("KeyError: 'version'"))
+        self.assertIsNone(exits.classify_exit(""))
+
+
+@override_settings(DBSYNC_CHECK_INTERVAL=300)
+class ExitHandlingTests(SimpleTestCase):
+    """What _handle_exit does with a classified exit, through _reconcile
+    (review note 2026-10-20b, findings 2-4)."""
+
+    def setUp(self):
+        for target in ("_maybe_check", "_set_state", "_start", "_track_mergin"):
+            setattr(self, target, mock.patch.object(Supervisor, target).start())
+        self.conditions = mock.patch("supervisor.core.conditions").start()
+        self.events = mock.patch("supervisor.core.events").start()
+        self.tail = mock.patch("supervisor.core.tail", return_value="").start()
+        mock.patch("supervisor.core.hooks.pending_requests", return_value=[]).start()
+        mock.patch("supervisor.core.processes.remove_pidfile").start()
+        self.addCleanup(mock.patch.stopall)
+        self.supervisor = Supervisor(tick_seconds=1)
+        self.project = running_project()
+        self.rt = Runtime(child=DeadChild(), last_start_at=time.monotonic())
+        self.supervisor.runtimes[self.project.pk] = self.rt
+
+    def test_deterministic_exit_is_not_restarted_and_raises_the_condition(self):
+        self.tail.return_value = "DbSyncError: 'base' schema is not synchronized with source GPKG. --force-init"
+        self.supervisor._reconcile(self.project)
+        self.assertEqual(self._set_state.call_args.args[1], PS.CRASHED)
+        self.assertIn("not restarted", self._set_state.call_args.args[2])
+        self.assertIn("Re-init", self._set_state.call_args.args[2])
+        self.conditions.activate.assert_called_once()
+        self.assertEqual(self.conditions.activate.call_args.args[1], "checkout_inconsistent")
+        self.assertEqual(self.conditions.activate.call_args.kwargs["level"], Event.Level.ERROR)
+        self.assertEqual(self.rt.next_start_at, float("inf"))
+        self.assertEqual(self.rt.crashes, 0)
+        self._start.assert_not_called()
+        self.supervisor._reconcile(self.project)      # next tick: still no restart
+        self._start.assert_not_called()
+        # Paused, then resumed after a repair by hand: starts at once.
+        self.project.desired_state = SyncProject.DesiredState.PAUSED
+        self.supervisor._reconcile(self.project)
+        self.assertEqual(self.rt.next_start_at, 0.0)
+        self.project.desired_state = SyncProject.DesiredState.RUNNING
+        self.supervisor._reconcile(self.project)
+        self._start.assert_called_once()
+
+    def test_mergin_unreachable_exit_feeds_the_condition_and_restarts_within_a_minute(self):
+        self.tail.return_value = ("Traceback ...\nmergin.common.LoginError: <urlopen error [Errno 111] "
+                                  "Connection refused>")
+        now = time.monotonic()
+        self.supervisor._reconcile(self.project)
+        self._track_mergin.assert_called_once()
+        self.assertIs(self._track_mergin.call_args.args[2], True)
+        self.assertIn("Connection refused", self._track_mergin.call_args.args[3])
+        self.conditions.activate.assert_not_called()
+        self.events.error.assert_not_called()
+        self.assertEqual(self.rt.crashes, 0)
+        self.assertLessEqual(self.rt.next_start_at - now, 60 + BACKOFF_JITTER + 1)
+        self.assertIn("Mergin unreachable", self._set_state.call_args.args[2])
+
+    def test_auth_failure_is_its_own_condition_with_capped_backoff(self):
+        self.tail.return_value = "mergin.common.LoginError: HTTP Error 401: Unauthorized"
+        self.conditions.activate.return_value = True
+        now = time.monotonic()
+        for _ in range(6):
+            self.rt.child = DeadChild()
+            self.supervisor._reconcile(self.project)
+        self.assertEqual(self.rt.crashes, 6)
+        self.assertLessEqual(self.rt.next_start_at - now, 300 + BACKOFF_JITTER + 1)
+        activated = [c.args[1] for c in self.conditions.activate.call_args_list]
+        self.assertEqual(set(activated), {"mergin_auth_failed"})
+        self._track_mergin.assert_not_called()
+
+    def test_process_crashed_alerts_at_three_and_reminds_after_an_hour(self):
+        self.tail.return_value = "KeyError: 'version'"
+        for _ in range(3):
+            self.rt.child = DeadChild()
+            self.supervisor._reconcile(self.project)
+        self.conditions.activate.assert_called_once()
+        self.assertEqual(self.conditions.activate.call_args.args[1], "process_crashed")
+        self.assertIsNotNone(self.rt.crash_alerted_at)
+        self.rt.child = DeadChild()
+        self.supervisor._reconcile(self.project)          # fourth crash, minutes later: an event, no mail
+        self.conditions.alert.assert_not_called()
+        self.rt.crash_alerted_at -= 3601
+        self.rt.child = DeadChild()
+        self.supervisor._reconcile(self.project)          # an hour later: the reminder
+        self.conditions.alert.assert_called_once()
+        self.assertIn("5 consecutive restarts", self.conditions.alert.call_args.args[2])
+        self.assertEqual(self.rt.crash_reminders, 1)
+        self.rt.child = DeadChild()
+        self.supervisor._reconcile(self.project)          # not again until a day has passed
+        self.conditions.alert.assert_called_once()
 
 
 class ReconcilePauseTests(SimpleTestCase):

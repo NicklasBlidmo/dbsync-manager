@@ -8,8 +8,12 @@ hook now" arrive with the operations and hooks slices.
 """
 
 import logging
+from datetime import datetime
+from urllib.parse import urlencode
 
 from django.conf import settings
+from django.core.paginator import Paginator
+from django.utils import timezone
 from django.contrib.auth.decorators import login_required, permission_required
 from django.db import IntegrityError
 from django.http import HttpResponse, HttpResponseBadRequest
@@ -228,6 +232,7 @@ def _project_context(project):
         "facts": _project_facts(project, rows),
         "connections": list(project.connections.all()),
         "active_conditions": sorted((project.active_conditions or {}).items()),
+        "needs_reinit": "checkout_inconsistent" in (project.active_conditions or {}),
         "can_operate": False,
         "operation": operation,
         "operation_open": operation is not None and operation.is_open,
@@ -235,15 +240,51 @@ def _project_context(project):
     }
 
 
+def _parse_when(text):
+    """An ISO date or date-time from a filter field, aware in TZ; None when empty or malformed."""
+    if not text:
+        return None
+    try:
+        value = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return value if timezone.is_aware(value) else timezone.make_aware(value)
+
+
+def _events_context(project, request):
+    """The Events table with a date/time and level filter and paging
+    (review note 2026-10-20b, finding 5)."""
+    filters = {key: request.GET.get(key, "") for key in ("since", "until", "level")}
+    qs = project.events.select_related("user").order_by("-at")
+    since, until = _parse_when(filters["since"]), _parse_when(filters["until"])
+    if since:
+        qs = qs.filter(at__gte=since)
+    if until:
+        qs = qs.filter(at__lt=until)
+    if filters["level"] in dict(Event.Level.choices):
+        qs = qs.filter(level=filters["level"])
+    page = Paginator(qs, EVENTS_ON_PAGE).get_page(request.GET.get("page"))
+    events = list(page.object_list)
+    filtering = any(filters.values()) or page.number > 1
+    query = urlencode({k: v for k, v in filters.items() if v})
+    return {
+        "events": events,
+        "events_page": page,
+        "events_filters": filters,
+        "events_query": query + "&" if query else "",
+        "events_latest": events[0].at if events else None,
+        # Collapsed by default; open when the newest entry needs attention
+        # (slice 10, item 4) or the operator is looking at a filtered window.
+        "events_open": (bool(events) and events[0].level in ("warning", "error")) or filtering,
+        "level_choices": Event.Level.choices,
+    }
+
+
 @login_required
 def project_detail(request, pk):
     project = get_object_or_404(SyncProject, pk=pk)
     context = _project_context(project)
-    events = list(project.events.select_related("user").order_by("-at")[:EVENTS_ON_PAGE])
-    context["events"] = events
-    context["events_latest"] = events[0].at if events else None
-    # Collapsed by default; open when the newest entry needs attention (slice 10, item 4).
-    context["events_open"] = bool(events) and events[0].level in ("warning", "error")
+    context.update(_events_context(project, request))
     context["can_operate"] = request.user.has_perm("registry.change_syncproject")
     context["now_date"] = _today()
     context.update(_log_context(project))
@@ -452,6 +493,83 @@ def scheduled_run_now(request, pk):
     events.record(None, Event.Level.INFO, f"{request.user.get_username()} requested the scheduled hook '{hook.name}'",
                   source=Event.Source.USER, user=request.user)
     return redirect("scheduled", pk=hook.pk)
+
+
+# --- Pause all / Resume all (review note 2026-10-20b, finding 6) ---------------------
+
+PAUSE_ALL_PREFIX = "pause_all:"
+
+
+def _pause_all_candidates():
+    """Running projects without an open operation (the operation owns the project)."""
+    return list(
+        SyncProject.objects.filter(removed_at__isnull=True, desired_state=SyncProject.DesiredState.RUNNING)
+        .exclude(operations__status__in=Operation.OPEN_STATUSES).distinct().order_by("mergin_project")
+    )
+
+
+def _latest_pause_all_batch():
+    event = Event.objects.filter(condition__startswith=PAUSE_ALL_PREFIX).order_by("-at").first()
+    return event.condition if event else None
+
+
+def _resume_all_candidates():
+    """Projects paused by the latest Pause all that are still paused: the
+    batch is the set of events carrying its condition key, so projects
+    paused before (or by hand) are left alone. No extra storage."""
+    batch = _latest_pause_all_batch()
+    if batch is None:
+        return [], None
+    ids = Event.objects.filter(condition=batch).values_list("project_id", flat=True)
+    projects = list(
+        SyncProject.objects.filter(pk__in=ids, removed_at__isnull=True, desired_state=SyncProject.DesiredState.PAUSED)
+        .order_by("mergin_project")
+    )
+    return projects, batch
+
+
+@login_required
+@permission_required("registry.change_syncproject", raise_exception=True)
+def pause_all(request):
+    projects = _pause_all_candidates()
+    if request.method == "POST":
+        batch = f"{PAUSE_ALL_PREFIX}{timezone.now():%Y%m%dT%H%M%S}"
+        for project in projects:
+            SyncProject.objects.filter(pk=project.pk).update(desired_state=SyncProject.DesiredState.PAUSED)
+            events.record(project, Event.Level.INFO, f"{request.user.get_username()} paused the sync (Pause all)",
+                          source=Event.Source.USER, condition=batch, user=request.user)
+        return redirect("home")
+    skipped = list(SyncProject.objects.filter(removed_at__isnull=True, desired_state=SyncProject.DesiredState.PAUSED)
+                   .order_by("mergin_project"))
+    return render(request, "ui/bulk.html", {
+        "title": "Pause all", "subtitle": "Every running sync stops between cycles: each daemon finishes its current pull or push, then exits.",
+        "lead": f"{len(projects)} project{'s' if len(projects) != 1 else ''} will be paused:",
+        "projects": projects, "skipped": skipped, "skipped_why": "already paused; Resume all leaves them paused",
+        "button": "Pause all", "action_url": request.path, "empty": "No running project to pause.",
+    })
+
+
+@login_required
+@permission_required("registry.change_syncproject", raise_exception=True)
+def resume_all(request):
+    projects, batch = _resume_all_candidates()
+    if request.method == "POST":
+        for project in projects:
+            SyncProject.objects.filter(pk=project.pk).update(desired_state=SyncProject.DesiredState.RUNNING)
+            events.record(project, Event.Level.INFO, f"{request.user.get_username()} resumed the sync (Resume all)",
+                          source=Event.Source.USER, condition=(batch or "").replace(PAUSE_ALL_PREFIX, "resume_all:"),
+                          user=request.user)
+        return redirect("home")
+    in_batch = {p.pk for p in projects}
+    skipped = [p for p in SyncProject.objects.filter(removed_at__isnull=True, desired_state=SyncProject.DesiredState.PAUSED)
+               .order_by("mergin_project") if p.pk not in in_batch]
+    return render(request, "ui/bulk.html", {
+        "title": "Resume all", "subtitle": "Resumes the projects that the last Pause all paused and that are still paused.",
+        "lead": f"{len(projects)} project{'s' if len(projects) != 1 else ''} will be resumed:",
+        "projects": projects, "skipped": skipped, "skipped_why": "paused before Pause all was pressed, or by hand",
+        "button": "Resume all", "action_url": request.path,
+        "empty": "Nothing to resume: no project from the last Pause all is still paused.",
+    })
 
 
 ACTIONS = {

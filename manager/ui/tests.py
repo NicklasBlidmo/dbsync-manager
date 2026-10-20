@@ -438,6 +438,109 @@ class WizardViewTests(TestCase):
 
 
 @tag("db")
+class BulkActionTests(TestCase):
+    """Pause all / Resume all and the events filter (review note 2026-10-20b, 5 and 6)."""
+
+    @classmethod
+    def setUpTestData(cls):
+        ensure_groups()
+        cls.operator = User.objects.create_user("op4", password="pw")
+        cls.operator.groups.add(Group.objects.get(name="operator"))
+        cls.viewer = User.objects.create_user("v4", password="pw")
+        cls.viewer.groups.add(Group.objects.get(name="viewer"))
+        account = MerginAccount(name="svc4", username="svc")
+        account.secret = "pw"
+        account.save()
+        database = Database(name="gis4", host="db", dbname="ak", user="u")
+        database.password = "pw"
+        database.save()
+        cls.projects = {}
+        for name, desired in (("ak/a", "running"), ("ak/b", "running"), ("ak/c", "paused")):
+            cls.projects[name] = SyncProject.objects.create(
+                mergin_project=name, mergin_account=account, database=database, schema_prefix=name[-1],
+                desired_state=desired,
+            )
+
+    def test_pause_all_then_resume_all_touch_only_the_batch(self):
+        self.client.login(username="op4", password="pw")
+        page = self.client.get(reverse("pause_all"))
+        self.assertContains(page, "2 projects will be paused")
+        self.assertContains(page, "ak/c")                    # listed as not touched
+        response = self.client.post(reverse("pause_all"))
+        self.assertRedirects(response, reverse("home"))
+        self.assertEqual(sorted(SyncProject.objects.filter(desired_state="paused").values_list("mergin_project", flat=True)),
+                         ["ak/a", "ak/b", "ak/c"])
+        batch = Event.objects.filter(condition__startswith="pause_all:").values_list("condition", flat=True).distinct()
+        self.assertEqual(len(batch), 1)
+        self.assertEqual(Event.objects.filter(condition=batch[0]).count(), 2)
+        # Someone resumes ak/a by hand meanwhile; Resume all then only resumes ak/b.
+        SyncProject.objects.filter(mergin_project="ak/a").update(desired_state="running")
+        page = self.client.get(reverse("resume_all"))
+        self.assertContains(page, "1 project will be resumed")
+        self.assertContains(page, "ak/b")
+        self.assertContains(page, "Not touched: ak/c")
+        self.client.post(reverse("resume_all"))
+        self.assertEqual(SyncProject.objects.get(mergin_project="ak/b").desired_state, "running")
+        self.assertEqual(SyncProject.objects.get(mergin_project="ak/c").desired_state, "paused")
+        self.assertTrue(Event.objects.filter(condition__startswith="resume_all:", project__mergin_project="ak/b").exists())
+        # Nothing left: the page says so instead of offering a button.
+        self.assertContains(self.client.get(reverse("resume_all")), "Nothing to resume")
+        self.client.login(username="v4", password="pw")
+        self.assertEqual(self.client.get(reverse("pause_all")).status_code, 403)
+
+    def test_home_shows_the_buttons_to_operators_only(self):
+        self.client.login(username="op4", password="pw")
+        self.assertContains(self.client.get(reverse("home")), "Pause all")
+        self.client.login(username="v4", password="pw")
+        self.assertNotContains(self.client.get(reverse("home")), "Pause all")
+
+    def test_events_filter_and_paging(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        project = self.projects["ak/a"]
+        base = timezone.make_aware(timezone.datetime(2026, 10, 20, 13, 0))
+        for i in range(60):
+            Event.objects.create(project=project, at=base + timedelta(minutes=i), level="info" if i % 10 else "error",
+                                 source="supervisor", message=f"event {i}")
+        self.client.login(username="v4", password="pw")
+        url = reverse("project", args=[project.pk])
+        page = self.client.get(url)
+        self.assertContains(page, "event 59")
+        self.assertNotContains(page, "event 5<")
+        self.assertContains(page, "page 1 of 2")
+        self.assertContains(page, "older")
+        page = self.client.get(url, {"page": 2})
+        self.assertContains(page, "event 0<")
+        page = self.client.get(url, {"since": "2026-10-20T13:30", "until": "2026-10-20T13:40", "level": "info"})
+        self.assertContains(page, "event 39")
+        self.assertNotContains(page, "event 30<")               # error, filtered out
+        self.assertNotContains(page, "event 40<")               # at the until bound
+        self.assertContains(page, 'id="events" open')
+        self.assertContains(page, "Reset")
+
+    def test_events_command(self):
+        from io import StringIO
+
+        from django.core.management import call_command
+
+        project = self.projects["ak/b"]
+        Event.objects.create(project=project, level="error", source="dbsync", message="line one\nline two", condition="process_crashed")
+        Event.objects.create(project=project, level="info", source="supervisor", message="fine")
+        out, err = StringIO(), StringIO()
+        call_command("events", project="ak/b", since="2026-01-01", level="error", stdout=out, stderr=err)
+        text = out.getvalue()
+        self.assertIn("error", text)
+        self.assertIn("ak/b", text)
+        self.assertIn("line one", text)
+        self.assertIn("    line two", text)
+        self.assertIn("[process_crashed]", text)
+        self.assertNotIn("fine", text)
+        self.assertIn("1 event(s)", err.getvalue())
+
+
+@tag("db")
 class ScheduledPageTests(TestCase):
     @classmethod
     def setUpTestData(cls):

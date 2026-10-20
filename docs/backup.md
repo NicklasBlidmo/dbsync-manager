@@ -158,6 +158,28 @@ manager re-download the checkout (delete the project's work dir; db-sync
 downloads the version in the base schema comment on the next start).
 Design §10 "State, backup and recovery" describes choosing the source.
 
+## Repair after an inconsistent checkout
+
+Health `failed` with the condition `checkout_inconsistent` means db-sync
+found the checkout and the `base` schema at the same version but with
+different content (a daemon killed between "GeoPackage updated" and
+"base schema updated"; since patch `0002` a stop waits for the pull to
+finish, so this should no longer happen on a deploy). The repair is
+Re-init, which drops and rebuilds the sync schemas from Mergin:
+
+1. If the installation keeps its own views or grants next to the sync
+   schemas, dump its own schema first: `pg_dump -Fc -n <own schema>`.
+   Views that reference the sync schemas are dropped by the cascade.
+2. Project page → **Re-init**, "GeoPackage in Mergin"; confirm that no
+   database changes are pending (the dialog lists them; pending edits
+   would be lost).
+3. Re-apply the installation's own views and grants (a `post_init` hook
+   does this automatically if one is configured), then check the
+   validation views.
+
+Tables outside the sync schemas are untouched; the sync schemas are a
+copy of Mergin and lose nothing.
+
 ## Installation worksheet
 
 Fill in for your installation and keep it with the organisation's own

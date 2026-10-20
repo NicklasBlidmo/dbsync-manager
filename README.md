@@ -127,6 +127,51 @@ holds cookies from another application on the same host name. The manager
 uses its own cookie names to avoid this; clear the site data once if the
 browser still has cookies from an older build.
 
+### Operations
+
+**Deploys, restarts and stops are graceful.** `docker compose up -d
+--build`, `restart`, `stop` and `down` send SIGTERM to the container;
+the supervisor passes it to every daemon, and a daemon finishes its
+current pull or push before it exits (patch `0002` in `patches/`). The
+stop takes up to 150 s (`stop_grace_period` in `docker-compose.yml`); do
+not shorten it. Before that patch a stop mid-pull left a checkout that
+db-sync refused to use until Re-init. Every project gets two events per
+stop: "stopping db-sync, waiting for the current cycle" and "stopped
+cleanly after N s" or "killed after N s".
+
+**Pause all / Resume all** on the Projects page (operators) stop every
+running sync between cycles and resume exactly the projects that Pause
+all paused; projects that were already paused stay paused. Use it before
+work on the database or the Mergin account, or when a deploy must be
+done during field hours.
+
+**Health `failed`** means the daemon would fail the same way on every
+start and is not restarted: the project page shows the condition, the
+mail says what to do. `checkout_inconsistent` (the checkout and the
+database no longer agree, typically after a daemon was killed mid-pull)
+needs **Re-init** on the project page: dump the installation's own
+schema first if views or grants live next to the sync schemas
+([docs/backup.md](docs/backup.md), "Repair after an inconsistent
+checkout"), choose "GeoPackage in Mergin", confirm that no database
+changes are pending, then re-apply the views and grants. Nothing outside
+the sync schemas is touched. `database_missing_postgis` needs the DBA,
+then Pause and Resume.
+
+**Mergin connectivity.** A daemon that exits because the Mergin server is
+unreachable is restarted every minute and feeds the same
+`mergin_unreachable` condition as the check (one mail per server after
+`DBSYNC_MERGIN_DOWN_ALERT_AFTER`); refused credentials are
+`mergin_auth_failed`, one mail, restarts every five minutes. A crash loop
+that persists reminds after an hour and then daily, with the restart
+count and the latest stderr lines.
+
+**Events after the fact.** The project page's Events table has a
+date/time and level filter and paging; the terminal has
+
+```sh
+docker compose exec manager python manage.py events --project <id or workspace/name> --since 2026-10-20T13:00 [--level error]
+```
+
 ### Database
 
 The `postgis` service is behind the Compose profile `postgis` and is not
@@ -192,6 +237,11 @@ scripts are the organisation's own; the manager only provides the
 environment (design §8). `psql` and `ogr2ogr` are in the image. A hook that needs more privileges than the sync role
 (views, grants, `pg_dump`) gets its own "run as" database connection in
 the admin; `DBSYNC_SYNC_ROLE` tells the script which role to grant to.
+
+A trigger the installation puts on a synced `_s_` table runs inside
+db-sync's session, with db-sync's `search_path`: it must schema-qualify
+everything it touches, or its NOTICE ("relation ... does not exist")
+turns up as an info event on the project page.
 
 Hooks run in worker threads: a long hook never stalls the supervisor,
 and one that is still running when the container stops gets SIGTERM,
