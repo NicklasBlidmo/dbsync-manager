@@ -42,9 +42,12 @@ def activate(project, condition: str, message: str, level=Event.Level.WARNING, *
     return True
 
 
-def alert(project, condition: str, message: str) -> bool:
-    """Mail about a condition that is already active (delayed alert)."""
+def alert(project, condition: str, message: str, *, mail: bool = True) -> bool:
+    """Mail about a condition that is already active (delayed alert). With
+    mail=False only the event is written; the caller sends (or groups) the mail."""
     events.warning(project, message, condition=condition)
+    if not mail:
+        return False
     return alerts.notify(project, condition, message)
 
 

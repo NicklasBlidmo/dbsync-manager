@@ -58,6 +58,49 @@ def notify(project, condition, message, *, resolved: bool = False) -> bool:
     return True
 
 
+# --- several projects, one condition, one tick ---------------------------------------
+
+
+def _db_name(project) -> str:
+    return project.database.name if getattr(project, "database_id", None) else ""
+
+
+def group_subject(items, condition, resolved: bool) -> str:
+    state = "resolved" if resolved else "alert"
+    return f"[dbsync-manager] {len(items)} projects: {state} {condition}"
+
+
+def group_body(items, condition, resolved: bool) -> str:
+    lines = [f"Condition: {condition} ({'resolved' if resolved else 'active'}) on {len(items)} projects", ""]
+    for project, message in items:
+        db = _db_name(project)
+        lines += [f"{project.mergin_project}" + (f" ({db})" if db else "") + ":", f"  {message}", ""]
+    base = getattr(settings, "DBSYNC_BASE_URL", "")
+    if base:
+        lines += [f"{base.rstrip('/')}/", ""]
+    lines.append("Sent by dbsync-manager." + ("" if resolved else " Nothing more is sent while the condition stays active."))
+    return "\n".join(lines)
+
+
+def notify_group(items, condition, *, resolved: bool = False) -> bool:
+    """One mail for `items` = [(project, message), ...] that entered or left
+    `condition` in the same tick (an outage of the shared Mergin server hits
+    every project at once). Recipients are the union of the projects'
+    notify_emails. Returns True if sent."""
+    recipients = sorted({a for project, _ in items for a in (project.notify_emails or []) if a})
+    if not recipients:
+        return False
+    try:
+        send_mail(group_subject(items, condition, resolved), group_body(items, condition, resolved),
+                  settings.DEFAULT_FROM_EMAIL, recipients, fail_silently=False)
+    except Exception as exc:  # noqa: BLE001 - alerting must not break the loop
+        log.warning("grouped alert mail (%s, %d projects) failed: %s", condition, len(items), exc)
+        events.warning(None, f"alert e-mail could not be sent ({condition}, {len(items)} projects): {exc}")
+        return False
+    log.info("grouped alert mail sent: %s%s for %d projects", condition, " resolved" if resolved else "", len(items))
+    return True
+
+
 # --- scheduled hooks (slice 13) ---------------------------------------------------
 
 

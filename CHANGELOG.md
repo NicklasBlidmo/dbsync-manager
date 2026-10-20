@@ -14,6 +14,8 @@
   `DBSYNC_MERGIN_DOWN_ALERT_AFTER` (default 900 s), and the recovery
   event carries the duration. Server version and permission are kept
   from the last successful call meanwhile. 401/403/404 stay errors.
+  When several projects on the same Mergin server enter or leave the
+  condition in one tick, one mail lists them instead of one per project.
 - Scheduled hooks are due once the clock is past today's `run_at` and no
   run started since then, instead of "no run today": a `run_at` moved
   later the same day now runs once more, and the catch-up after downtime

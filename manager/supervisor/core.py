@@ -99,6 +99,10 @@ class Supervisor:
         self.open_operations: dict[int, Operation] = {}
         self.scheduled_jobs: dict[int, hooks.HookJob] = {}        # hook id -> running scheduled hook
         self.operation_hook_jobs: dict[int, hooks.HookJob] = {}   # project id -> running pre_remove hook
+        # Alert mails queued during the tick, (condition, account url, resolved)
+        # -> [(project, message)]; sent as one mail per key at the end of the
+        # tick, so an outage of the shared Mergin server is one mail, not five.
+        self._grouped_mail: dict = {}
         self.io = SupervisorIO(self)
         self._last_prune_day = None
         self._last_spawn_at: float | None = None
@@ -260,6 +264,8 @@ class Supervisor:
                 raise
             except Exception:  # noqa: BLE001 - one project must not stall the others
                 log.exception("reconcile failed for %s", project)
+
+        self._flush_grouped_mails()
 
         try:
             self._run_scheduled_hooks()
@@ -746,12 +752,35 @@ class Supervisor:
                 rt.mergin_alerted = age >= threshold   # adopted mid-outage: the previous supervisor mailed
             if not rt.mergin_alerted and age >= threshold:
                 rt.mergin_alerted = True
-                conditions.alert(project, key, f"Mergin server unreachable for {_duration(age)}: {message}")
+                text = f"Mergin server unreachable for {_duration(age)}: {message}"
+                conditions.alert(project, key, text, mail=False)
+                self._queue_mail(project, key, text, resolved=False)
         elif since is not None:
             age = (timezone.now() - since).total_seconds()
             mailed = rt.mergin_alerted if rt.mergin_alerted is not None else age >= threshold
-            conditions.resolve(project, key, f"Mergin server reachable again after {_duration(age)}", mail=bool(mailed))
+            text = f"Mergin server reachable again after {_duration(age)}"
+            conditions.resolve(project, key, text, mail=False)
+            if mailed:
+                self._queue_mail(project, key, text, resolved=True)
             rt.mergin_alerted = None
+
+    def _queue_mail(self, project, condition: str, message: str, *, resolved: bool):
+        url = project.mergin_account.url if getattr(project, "mergin_account_id", None) else ""
+        self._grouped_mail.setdefault((condition, url, resolved), []).append((project, message))
+
+    def _flush_grouped_mails(self):
+        """Send what the tick queued: one mail per (condition, account url,
+        resolved); a single project gets the usual per-project mail."""
+        queued, self._grouped_mail = self._grouped_mail, {}
+        for (condition, _url, resolved), items in queued.items():
+            try:
+                if len(items) == 1:
+                    project, message = items[0]
+                    alerts.notify(project, condition, message, resolved=resolved)
+                else:
+                    alerts.notify_group(items, condition, resolved=resolved)
+            except Exception:  # noqa: BLE001 - mail must not break the loop
+                log.exception("grouped alert mail failed (%s)", condition)
 
     # --- helpers -------------------------------------------------------------
 

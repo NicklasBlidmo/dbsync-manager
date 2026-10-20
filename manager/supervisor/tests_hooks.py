@@ -165,6 +165,24 @@ class AlertTextTests(SimpleTestCase):
         self.assertIn("checkout not moving", body)
         self.assertIn("http://gis.example:8090/projects/7/", body)
 
+    @override_settings(DBSYNC_BASE_URL="http://gis.example:8090/")
+    def test_grouped_subject_body_and_recipients(self):
+        project, _ = project_with_hook()
+        other = SyncProject(pk=8, mergin_project="ak/nykoping", schema_prefix="n", mergin_account=project.mergin_account,
+                            database=project.database, notify_emails=["ops@example.org", "gis@example.org"])
+        items = [(project, "Mergin server unreachable for 16 min: 503"), (other, "Mergin server unreachable for 16 min: 503")]
+        self.assertEqual(alerts.group_subject(items, "mergin_unreachable", False),
+                         "[dbsync-manager] 2 projects: alert mergin_unreachable")
+        body = alerts.group_body(items, "mergin_unreachable", resolved=False)
+        self.assertIn("on 2 projects", body)
+        self.assertIn("ak/bonsta (gis):", body)
+        self.assertIn("ak/nykoping (gis):", body)
+        self.assertIn("http://gis.example:8090/", body)
+        with mock.patch("supervisor.alerts.send_mail") as send:
+            self.assertTrue(alerts.notify_group(items, "mergin_unreachable", resolved=True))
+        self.assertEqual(send.call_args.args[3], ["gis@example.org", "ops@example.org"])   # union, each once
+        self.assertIn("resolved", send.call_args.args[0])
+
 
 # --- post_init through the loop (§6 step 4), registry writes stubbed ------------
 
