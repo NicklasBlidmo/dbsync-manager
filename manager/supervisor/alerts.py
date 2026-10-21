@@ -37,9 +37,21 @@ def body_for(project, condition, message, resolved: bool) -> str:
     return "\n".join(lines)
 
 
+def recipients_for(owner) -> list:
+    """The owner's notify_emails, or the installation's default list when
+    that is empty (review note 2026-10-20d, finding 2). `owner` is a
+    project or a scheduled hook."""
+    own = [a for a in (getattr(owner, "notify_emails", None) or []) if a]
+    if own:
+        return own
+    from registry.models import InstallationSettings
+
+    return InstallationSettings.default_recipients()
+
+
 def notify(project, condition, message, *, resolved: bool = False) -> bool:
     """Send the mail if the project has recipients. Returns True if sent."""
-    recipients = [a for a in (project.notify_emails or []) if a]
+    recipients = recipients_for(project)
     if not recipients:
         return False
     try:
@@ -87,7 +99,7 @@ def notify_group(items, condition, *, resolved: bool = False) -> bool:
     `condition` in the same tick (an outage of the shared Mergin server hits
     every project at once). Recipients are the union of the projects'
     notify_emails. Returns True if sent."""
-    recipients = sorted({a for project, _ in items for a in (project.notify_emails or []) if a})
+    recipients = sorted({a for project, _ in items for a in recipients_for(project)})
     if not recipients:
         return False
     try:
@@ -131,8 +143,10 @@ def hook_body(hook, change: str, result, run=None) -> str:
 
 def notify_hook(hook, change: str, result, run=None) -> bool:
     """Mail the hook's recipients about a failed or recovered run. Returns True if sent."""
-    recipients = [a for a in (hook.notify_emails or []) if a]
+    recipients = recipients_for(hook)
     if not recipients:
+        events.info(None, f"alert not mailed for scheduled hook '{hook.name}' ({change}): no recipients on the hook "
+                          "and no default list under Settings -> Installation settings")
         return False
     try:
         send_mail(hook_subject(hook, change), hook_body(hook, change, result, run),

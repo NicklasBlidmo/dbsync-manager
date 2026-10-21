@@ -21,7 +21,7 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.views.decorators.http import require_GET, require_POST
 
 from registry import events
-from registry.models import Database, Event, Hook, MerginAccount, Operation, SyncProject
+from registry.models import Database, Event, Hook, InstallationSettings, MerginAccount, Operation, SyncProject
 from supervisor import mergin_api, operations as opsm
 from supervisor.logs import tail
 from supervisor.processes import LOG_NAME, STDERR_NAME
@@ -54,6 +54,7 @@ def _projects_queryset(request):
 
 def _project_rows(qs):
     rows = []
+    default_recipients = InstallationSettings.default_recipients()
     for project in qs:
         statuses = list(project.statuses.all())
         server = max((s.server_version or 0 for s in statuses), default=None) or None
@@ -79,6 +80,8 @@ def _project_rows(qs):
                 s.check_error and (s.last_ok_check_at is None or s.last_ok_check_at != s.checked_at) for s in statuses
             ),
             "check_error_text": "; ".join(s.check_error for s in statuses if s.check_error)[:300],
+            # Alerts would mail nobody (2026-10-20d, finding 2).
+            "no_recipients": not (project.notify_emails or default_recipients),
         })
     return rows
 
@@ -233,6 +236,7 @@ def _project_context(project):
         "connections": list(project.connections.all()),
         "active_conditions": sorted((project.active_conditions or {}).items()),
         "needs_reinit": "checkout_inconsistent" in (project.active_conditions or {}),
+        "no_recipients": not (project.notify_emails or InstallationSettings.default_recipients()),
         "can_operate": False,
         "operation": operation,
         "operation_open": operation is not None and operation.is_open,
@@ -805,6 +809,7 @@ def add_project(request):
         "prefix": prefix,
         "rows": rows,
         "hooks": {kind: Hook.objects.filter(kind=kind) for kind in ("post_init", "pre_remove", "post_pull")},
+        "default_recipients": InstallationSettings.default_recipients(),
     })
 
 
@@ -862,7 +867,8 @@ def _preview(request):
 @require_POST
 def add_preview(request):
     data, preview, _ = _preview(request)
-    return render(request, "ui/add/preview.html", {"data": data, "preview": preview, "hidden": data.as_hidden_fields()})
+    return render(request, "ui/add/preview.html", {"data": data, "preview": preview, "hidden": data.as_hidden_fields(),
+                                                   "default_recipients": InstallationSettings.default_recipients()})
 
 
 @login_required

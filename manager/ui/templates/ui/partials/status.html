@@ -24,6 +24,7 @@
     {% endif %}
   </div>
   {% if project.process_reason %}<pre class="pre-short mt-2">{{ project.process_reason }}</pre>{% endif %}
+  {% if no_recipients %}<div class="notice warn">Alerts for this project are not mailed: no recipients on the project and no default list under Settings → Installation settings.</div>{% endif %}
   {% for key, since in active_conditions %}
     <div class="notice {% if 'divergence' in key or 'stranded' in key or 'stuck' in key or 'crashed' in key or 'inconsistent' in key or 'missing' in key or 'auth' in key %}bad{% else %}warn{% endif %}">
       <strong>{{ key|condition_label }}</strong> <span class="muted" title="{{ since|isotime:'Y-m-d H:i:s' }}">active since {{ since|ago }}</span>

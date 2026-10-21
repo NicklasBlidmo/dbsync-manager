@@ -453,6 +453,40 @@ class Event(models.Model):
         return f"[{self.level}] {self.message[:60]}"
 
 
+# --- installation (slice 14b) ------------------------------------------------
+
+
+class InstallationSettings(models.Model):
+    """One row for the installation (review note 2026-10-20d, finding 2):
+    the default alert recipients. A project or scheduled hook whose own
+    notify_emails is empty uses them, so one list covers every project
+    that was added without recipients. Deliberately minimal: one page,
+    one field (the earlier InstallationSettings went in slice 10)."""
+
+    notify_emails = ArrayField(
+        models.EmailField(), default=list, blank=True, verbose_name="default alert recipients",
+        help_text="Comma-separated. Used by every project and scheduled hook whose own list is empty.",
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "installation settings"
+        verbose_name_plural = "Settings (installation)"
+
+    def __str__(self):
+        return "installation settings"
+
+    @classmethod
+    def default_recipients(cls) -> list:
+        from django.db import DatabaseError
+
+        try:
+            row = cls.objects.order_by("pk").values_list("notify_emails", flat=True).first()
+        except DatabaseError:
+            return []
+        return [a for a in (row or []) if a]
+
+
 # --- operations (§6 Operations) ----------------------------------------------
 
 

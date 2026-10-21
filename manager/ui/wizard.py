@@ -50,6 +50,7 @@ class WizardData:
     sleep_time: int = 60
     hooks: dict = field(default_factory=dict)      # kind -> Hook
     notify_emails: list = field(default_factory=list)
+    use_default_recipients: bool = False   # empty list means "the installation's default" (2026-10-20d)
     rows: list = field(default_factory=list)
     ack: bool = False
 
@@ -67,6 +68,7 @@ class WizardData:
             ("init_from", self.init_from),
             ("sleep_time", self.sleep_time),
             ("notify_emails", ", ".join(self.notify_emails)),
+            ("use_default_recipients", "1" if self.use_default_recipients else ""),
         ]
         for kind in ("post_init", "pre_remove", "post_pull"):
             hook = self.hooks.get(kind)
@@ -147,6 +149,11 @@ def parse(post) -> tuple[WizardData, list]:
             errors.append(f"not an e-mail address: {address}")
             continue
         data.notify_emails.append(address)
+    data.use_default_recipients = bool(post.get("use_default_recipients"))
+    if not data.notify_emails and not data.use_default_recipients:
+        # An empty list means the installation's default recipients; the
+        # operator says so explicitly or types addresses (2026-10-20d, finding 2).
+        errors.append("no alert recipients: enter addresses, or tick the installation's default recipients")
 
     # The ticked checkboxes are the file set; an empty list is an empty list.
     # The names table's rows only supply names, keyed by file; a picked file

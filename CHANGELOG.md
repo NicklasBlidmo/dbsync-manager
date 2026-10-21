@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Slice 14b (field test 2026-10-20d): Re-init and Remove resolve every
+  active condition (resolved event and recovery mail); an installation
+  default list of alert recipients under Settings → Installation
+  settings, used by every project and scheduled hook whose own list is
+  empty, with the add wizard requiring addresses or an explicit tick of
+  the default, and a "no recipients" warning where alerts would mail
+  nobody; health follows a condition at once (`failed` on activation,
+  `unknown` on resolve until the next check) and a check runs at the
+  first tick after a start; every stop path (pause, remove, re-init,
+  restart, shutdown) logs "stopping ... waiting for the current cycle"
+  and "stopped cleanly after N s" or "killed after N s".
 - Graceful stop (review note 2026-10-20b, finding 1): patch `0002` gives
   db-sync a SIGTERM handler; a daemon finishes its current pull or push
   and exits 0 at the next boundary. `STOP_GRACE` and the shutdown wait

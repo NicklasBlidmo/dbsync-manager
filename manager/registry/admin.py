@@ -8,6 +8,8 @@ the single-writer rule of §6 holds even in the admin.
 
 from django import forms
 from django.contrib import admin, messages
+from django.shortcuts import redirect
+from django.urls import reverse
 
 from supervisor import dbinspect
 
@@ -15,6 +17,7 @@ from .models import (
     Database,
     Event,
     Hook,
+    InstallationSettings,
     MerginAccount,
     Operation,
     SyncConnection,
@@ -137,6 +140,26 @@ class HookAdmin(OwnedAdmin):
             # A project pointing at a hook of the wrong kind would fail silently.
             fields.append("kind")
         return fields
+
+
+@admin.register(InstallationSettings)
+class InstallationSettingsAdmin(admin.ModelAdmin):
+    """A singleton: the list opens the one row (or the add form), no delete."""
+
+    fields = ["notify_emails", "updated_at"]
+    readonly_fields = ["updated_at"]
+
+    def has_add_permission(self, request):
+        return super().has_add_permission(request) and not InstallationSettings.objects.exists()
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+    def changelist_view(self, request, extra_context=None):
+        row = InstallationSettings.objects.order_by("pk").first()
+        if row is None:
+            return redirect(reverse("admin:registry_installationsettings_add"))
+        return redirect(reverse("admin:registry_installationsettings_change", args=[row.pk]))
 
 
 class SyncConnectionInline(admin.TabularInline):

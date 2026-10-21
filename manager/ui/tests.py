@@ -111,6 +111,16 @@ class PagesTests(TestCase):
             response = self.client.post(url, data, follow=True)
         self.assertContains(response, "connection refused")
 
+    def test_no_recipients_is_flagged_until_a_default_list_exists(self):
+        from registry.models import InstallationSettings
+
+        self.client.login(username="viewer", password="pw")
+        self.assertContains(self.client.get(reverse("home")), "no recipients")
+        self.assertContains(self.client.get(reverse("project", args=[self.project.pk])), "not mailed")
+        InstallationSettings.objects.create(notify_emails=["ops@example.org"])
+        self.assertNotContains(self.client.get(reverse("home")), "no recipients")
+        self.assertNotContains(self.client.get(reverse("project", args=[self.project.pk])), "not mailed")
+
     def test_home_filter(self):
         self.client.login(username="viewer", password="pw")
         response = self.client.get(reverse("projects_table"), {"health": "ok"})
@@ -292,9 +302,22 @@ class WizardViewTests(TestCase):
             "pick": ["1-punkter.gpkg", "d-foto.gpkg"],
             "file": ["1-punkter.gpkg", "d-foto.gpkg"],
             "modified": ["bonsta_s_punkter", "bonsta_s_foto"], "base": ["bonsta_b_punkter", "bonsta_b_foto"],
+            "use_default_recipients": "1",
         }
         data.update(overrides)
         return data
+
+    def test_recipients_are_addresses_or_the_default_never_nothing(self):
+        # 2026-10-20d, finding 2: a project added without recipients mailed nobody.
+        response = self.client.post(reverse("add_preview"), self.form(use_default_recipients=""))
+        self.assertContains(response, "no alert recipients")
+        self.assertNotContains(response, "Add sync</button>")
+        response = self.client.post(reverse("add_preview"), self.form(use_default_recipients="", notify_emails="ops@example.org"))
+        self.assertContains(response, "ops@example.org")
+        self.assertContains(response, "Add sync</button>")
+        response = self.client.post(reverse("add_preview"), self.form())
+        self.assertContains(response, "default recipients")
+        self.assertContains(response, 'name="use_default_recipients" value="1"')
 
     def test_viewer_cannot_open_the_wizard(self):
         self.client.login(username="v", password="pw")

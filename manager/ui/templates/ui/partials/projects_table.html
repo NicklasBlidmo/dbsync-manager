@@ -10,7 +10,8 @@
   {% for row in rows %}
     <tr>
       <td><a href="{% url 'project' row.project.pk %}">{{ row.project.mergin_project }}</a>
-          {% if row.project.active_conditions %}<span class="badge warn" title="{{ row.project.active_conditions.keys|join:', ' }}">{{ row.project.active_conditions|length }} alert{{ row.project.active_conditions|length|pluralize }}</span>{% endif %}</td>
+          {% if row.project.active_conditions %}<span class="badge warn" title="{{ row.project.active_conditions.keys|join:', ' }}">{{ row.project.active_conditions|length }} alert{{ row.project.active_conditions|length|pluralize }}</span>{% endif %}
+          {% if row.no_recipients %}<span class="badge warn" title="alerts are not mailed: no recipients on the project and no default list under Settings → Installation settings">no recipients</span>{% endif %}</td>
       <td><span class="badge {{ row.project.desired_state|badge }}">{{ row.project.desired_state }}</span></td>
       <td><span class="badge {{ row.project.process_state|badge }}" title="{{ row.project.process_reason|truncatechars:200 }}">{{ row.project.process_state }}</span></td>
       <td><span class="badge {{ row.project.health|badge }}">{{ row.project.get_health_display }}</span>

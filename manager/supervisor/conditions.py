@@ -24,9 +24,34 @@ from . import alerts
 CHECK_CONDITION_PREFIXES = ("divergence:", "db_behind", "stranded_db_edits", "stuck", "check_failed")
 
 
+NO_RECIPIENTS = ("alert not mailed: no recipients on the project and no default list under "
+                 "Settings -> Installation settings")
+
+
 def _save(project, active: dict):
+    """Write the active set, and let health follow it at once (review note
+    2026-10-20d, finding 3): a deterministic failure is `failed` now, not at
+    the next check; once it clears, `unknown` until the check runs."""
+    from .check import health_with_conditions
+
     project.active_conditions = active
-    SyncProject.objects.filter(pk=project.pk).update(active_conditions=active)
+    fields = {"active_conditions": active}
+    base = SyncProject.Health.UNKNOWN if project.health == SyncProject.Health.FAILED else project.health
+    health = health_with_conditions(base, active)
+    if health != project.health:
+        now = timezone.now()
+        project.health, project.health_since = health, now
+        fields.update(health=health, health_since=now)
+    SyncProject.objects.filter(pk=project.pk).update(**fields)
+
+
+def _mail(project, condition, message, *, resolved=False) -> bool:
+    """Send, or say once per activation that nobody would get it."""
+    if not alerts.recipients_for(project):
+        if not resolved:
+            events.info(project, f"{NO_RECIPIENTS} ({condition})")
+        return False
+    return alerts.notify(project, condition, message, resolved=resolved)
 
 
 def activate(project, condition: str, message: str, level=Event.Level.WARNING, *, mail: bool = True) -> bool:
@@ -38,7 +63,7 @@ def activate(project, condition: str, message: str, level=Event.Level.WARNING, *
     active[condition] = timezone.now().isoformat(timespec="seconds")
     _save(project, active)
     if mail:
-        alerts.notify(project, condition, message)
+        _mail(project, condition, message)
     return True
 
 
@@ -48,7 +73,7 @@ def alert(project, condition: str, message: str, *, mail: bool = True) -> bool:
     events.warning(project, message, condition=condition)
     if not mail:
         return False
-    return alerts.notify(project, condition, message)
+    return _mail(project, condition, message)
 
 
 def resolve(project, condition: str, message: str = "", *, mail: bool = True) -> bool:
@@ -60,7 +85,7 @@ def resolve(project, condition: str, message: str = "", *, mail: bool = True) ->
     del active[condition]
     _save(project, active)
     if mail:
-        alerts.notify(project, condition, text, resolved=True)
+        _mail(project, condition, text, resolved=True)
     return True
 
 

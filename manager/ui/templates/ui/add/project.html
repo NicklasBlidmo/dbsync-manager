@@ -56,6 +56,9 @@
       </select></label>
     {% endfor %}
     <label>Alert e-mails<br><input name="notify_emails" placeholder="a@example.org, b@example.org"></label>
+    <label class="block"><input type="checkbox" name="use_default_recipients" value="1"{% if default_recipients %} checked{% endif %}>
+      Use the installation's default recipients when the field is empty
+      <span class="muted">({% if default_recipients %}{{ default_recipients|join:", " }}{% else %}none set yet: Settings → Installation settings{% endif %})</span></label>
   </div>
 
   <p><button type="submit">Preview</button> <a class="button" href="{% url 'add_start' %}">Back</a></p>

@@ -338,6 +338,83 @@ class ExitHandlingTests(SimpleTestCase):
         self.conditions.alert.assert_called_once()
 
 
+class ConditionsFollowTests(SimpleTestCase):
+    """Health follows the conditions at once, and an activation without
+    recipients says so (2026-10-20d, findings 2 and 3)."""
+
+    def setUp(self):
+        self.objects = mock.patch("supervisor.conditions.SyncProject.objects").start()
+        self.events = mock.patch("supervisor.conditions.events").start()
+        self.alerts = mock.patch("supervisor.conditions.alerts").start()
+        self.addCleanup(mock.patch.stopall)
+        self.project = running_project(pk=12)
+        self.project.health = SyncProject.Health.OK
+
+    def updates(self):
+        return [c.kwargs for c in self.objects.filter.return_value.update.call_args_list]
+
+    def test_deterministic_condition_sets_failed_now_and_unknown_when_resolved(self):
+        from . import conditions
+
+        self.alerts.recipients_for.return_value = ["ops@example.org"]
+        conditions.activate(self.project, "checkout_inconsistent", "needs Re-init", level=Event.Level.ERROR)
+        self.assertEqual(self.project.health, SyncProject.Health.FAILED)
+        self.assertEqual(self.updates()[-1]["health"], SyncProject.Health.FAILED)
+        self.alerts.notify.assert_called_once()
+        conditions.resolve(self.project, "checkout_inconsistent", "resolved: re-initialised")
+        self.assertEqual(self.project.health, SyncProject.Health.UNKNOWN)
+        self.assertEqual(self.updates()[-1]["health"], SyncProject.Health.UNKNOWN)
+        self.assertEqual(self.alerts.notify.call_count, 2)
+        self.assertEqual(self.alerts.notify.call_args.kwargs["resolved"], True)
+
+    def test_other_conditions_leave_health_to_the_check(self):
+        from . import conditions
+
+        self.alerts.recipients_for.return_value = ["ops@example.org"]
+        conditions.activate(self.project, "process_crashed", "boom", level=Event.Level.ERROR)
+        self.assertEqual(self.project.health, SyncProject.Health.OK)
+        self.assertNotIn("health", self.updates()[-1])
+
+    def test_activation_without_recipients_writes_an_info_event_instead_of_mailing(self):
+        from . import conditions
+
+        self.alerts.recipients_for.return_value = []
+        conditions.activate(self.project, "process_crashed", "boom", level=Event.Level.ERROR)
+        self.alerts.notify.assert_not_called()
+        self.assertIn("alert not mailed", self.events.info.call_args.args[1])
+        self.assertIn("process_crashed", self.events.info.call_args.args[1])
+        self.events.info.reset_mock()
+        conditions.resolve(self.project, "process_crashed", "fine")
+        self.alerts.notify.assert_not_called()
+        self.assertNotIn("alert not mailed", " ".join(c.args[1] for c in self.events.info.call_args_list))
+
+
+class ResetResolvesConditionsTests(SimpleTestCase):
+    def test_reinit_and_remove_resolve_every_active_condition(self):
+        # 2026-10-20d, finding 1: Re-init cleared the set without the resolved event or mail.
+        with mock.patch("supervisor.core.conditions") as conditions, \
+                mock.patch("supervisor.core.events"), \
+                mock.patch("supervisor.core.SyncStatus.objects"), \
+                mock.patch("supervisor.core.SyncConnection.objects"), \
+                mock.patch("supervisor.core.SyncProject.objects"):
+            supervisor = Supervisor(tick_seconds=1)
+            project = running_project(pk=13)
+            project.active_conditions = {"checkout_inconsistent": "2026-10-20T13:07:53+00:00",
+                                         "mergin_unreachable": "2026-10-20T13:12:00+00:00"}
+            operation = mock.Mock(project=project, project_id=project.pk, params={}, kind="reinit", pk=5)
+            supervisor.io.reset(operation)
+            calls = {c.args[1]: c for c in conditions.resolve.call_args_list}
+            self.assertEqual(set(calls), {"checkout_inconsistent", "mergin_unreachable"})
+            self.assertIn("re-initialised", calls["checkout_inconsistent"].args[2])
+            self.assertEqual(calls["checkout_inconsistent"].kwargs["mail"], True)
+            self.assertEqual(calls["mergin_unreachable"].kwargs["mail"], False)   # grouped per server, not here
+            conditions.resolve.reset_mock()
+            project.active_conditions = {"process_crashed": "x"}
+            supervisor.io.mark_removed(mock.Mock(project=project, project_id=project.pk, params={"drop_schemas": False}, kind="remove", pk=6))
+            self.assertEqual(conditions.resolve.call_args.args[1], "process_crashed")
+            self.assertIn("sync removed", conditions.resolve.call_args.args[2])
+
+
 class ReconcilePauseTests(SimpleTestCase):
 
     def setUp(self):
@@ -379,7 +456,8 @@ class ReconcilePauseTests(SimpleTestCase):
         supervisor._reconcile(project)
         self.assertTrue(child.killed)
 
-        # The child is gone: stopped, an info event, no crash bookkeeping.
+        # The child is gone: stopped, the "killed" event (it ignored SIGTERM),
+        # no crash bookkeeping.
         child.alive = False
         child.exit_code = -15
         supervisor._reconcile(project)
@@ -387,7 +465,26 @@ class ReconcilePauseTests(SimpleTestCase):
         self.assertIsNone(rt.stopping_since)
         self.assertEqual(rt.crashes, 0)
         set_state.assert_called_with(project, PS.STOPPED, "")
-        events_mod.info.assert_called()
+        self.assertIn("waiting for the current cycle", events_mod.info.call_args_list[0].args[1])
+        events_mod.error.assert_called_once()
+        self.assertIn("killed after", events_mod.error.call_args.args[1])
+
+    @mock.patch("supervisor.core.events")
+    @mock.patch.object(Supervisor, "_set_state")
+    def test_pause_logs_the_same_stop_pair_as_shutdown(self, set_state, events_mod):
+        # 2026-10-20d, finding 4: every stop path says "stopping ... waiting"
+        # and "stopped cleanly after N s".
+        supervisor = Supervisor(tick_seconds=1)
+        project = paused_project()
+        child = StubChild()
+        rt = Runtime(child=child)
+        supervisor.runtimes[project.pk] = rt
+        supervisor._reconcile(project)
+        self.assertIn("stopping db-sync (pid 4242), waiting for the current cycle", events_mod.info.call_args.args[1])
+        child.alive = False
+        child.exit_code = 0
+        supervisor._reconcile(project)
+        self.assertIn("stopped cleanly after 0 s", events_mod.info.call_args.args[1])
         events_mod.error.assert_not_called()
 
     @mock.patch("supervisor.core.events")

@@ -260,6 +260,14 @@ rebuild, which installs that client from apt.postgresql.org.
 
 ### E-mail
 
+Alerts go to the project's recipients, or, when the project has none, to
+the installation's default list under Settings → Installation settings
+(scheduled hooks the same). Set the default list once and every project
+added without recipients is covered; until a project has one or the
+other, the Projects page shows "no recipients" and an activation writes
+"alert not mailed" instead of mailing. The add wizard asks for addresses
+or an explicit tick of the default.
+
 Alerts go out through whatever `SMTP_*` in `.env` points at. With
 `SMTP_USER` and `SMTP_PASSWORD` empty the manager sends without
 authentication, which is how Microsoft 365 direct send works; see

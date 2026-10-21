@@ -96,6 +96,7 @@ class Runtime:
     # process_crashed reminders: when the last mail went out and how many.
     crash_alerted_at: float | None = None
     crash_reminders: int = 0
+    stop_killed: bool = False               # the current stop had to SIGKILL
 
 
 class Supervisor:
@@ -349,7 +350,9 @@ class Supervisor:
             elif rt.restart_requested:
                 rt.restart_requested = False
                 rt.restarting = True
+                rt.stopping_since = now
                 rt.child.terminate()
+                self._stopping_event(project, rt, "for a restart")
                 log.info("restarting db-sync for %s (pid %s)", project, rt.child.pid)
             else:
                 self._observe(project, rt)
@@ -429,7 +432,9 @@ class Supervisor:
         child = processes.spawn(command, paths["work_dir"], paths["stderr"], paths["pidfile"], paths["config"], env=env)
         rt.child = child
         rt.stopping_since = None
+        rt.stop_killed = False
         rt.last_start_at = now
+        rt.last_check_at = 0.0   # a check at the first tick after start (2026-10-20d, finding 3)
 
         state, reason = self._initial_state(project)
         self._set_state(project, state, reason)
@@ -658,11 +663,32 @@ class Supervisor:
         if rt.stopping_since is None:
             rt.child.terminate()
             rt.stopping_since = now
+            rt.stop_killed = False
             self._set_state(project, PS.STOPPING, "")
+            self._stopping_event(project, rt, "")
             log.info("stopping db-sync for %s (pid %s)", project, rt.child.pid)
-        elif now - rt.stopping_since > STOP_GRACE:
+        elif now - rt.stopping_since > STOP_GRACE and not rt.stop_killed:
             log.warning("db-sync for %s ignored SIGTERM for %ss; killing", project, STOP_GRACE)
+            rt.stop_killed = True
             rt.child.kill()
+
+    @staticmethod
+    def _stopping_event(project, rt, why: str):
+        """The same pair of events for every stop path (2026-10-20d, finding 4):
+        this one when SIGTERM goes out, _stopped_event when the child is gone."""
+        suffix = f" {why}" if why else ""
+        events.info(project, f"stopping db-sync (pid {rt.child.pid}){suffix}, waiting for the current cycle (up to {STOP_GRACE} s)")
+
+    @staticmethod
+    def _stopped_event(project, rt, child, now, why: str = ""):
+        waited = int(now - rt.stopping_since) if rt.stopping_since is not None else 0
+        suffix = f" {why}" if why else ""
+        if rt.stop_killed:
+            events.error(project, f"db-sync (pid {child.pid}) ignored SIGTERM; killed after {waited} s{suffix}, "
+                                  "the checkout may need Re-init")
+        else:
+            events.info(project, f"db-sync (pid {child.pid}) stopped cleanly after {waited} s{suffix}")
+        rt.stop_killed = False
 
     # --- step 3: exit --------------------------------------------------------
 
@@ -672,21 +698,22 @@ class Supervisor:
         processes.remove_pidfile(paths["pidfile"])
         code = child.exit_code
 
+        if rt.restarting:
+            rt.restarting = False
+            self._stopped_event(project, rt, child, now, "for a restart")
+            rt.stopping_since = None
+            self._set_state(project, PS.STOPPED, "restarting")
+            return
+
         if rt.stopping_since is not None:
+            self._stopped_event(project, rt, child, now)
             rt.stopping_since = None
             operation = self.open_operations.get(project.pk)
             if operation is not None:
                 self._set_state(project, PS.BLOCKED, f"operation {operation.pk} ({operation.kind}) running")
             else:
                 self._set_state(project, PS.STOPPED, "")
-            events.info(project, f"db-sync stopped (pid {child.pid})")
             log.info("db-sync for %s stopped", project)
-            return
-
-        if rt.restarting:
-            rt.restarting = False
-            self._set_state(project, PS.STOPPED, "restarting")
-            events.info(project, f"db-sync stopped for restart (pid {child.pid})")
             return
 
         if rt.block_after_exit:
@@ -972,13 +999,24 @@ class SupervisorIO:
         if rt.stopping_since is None:
             child.terminate()
             rt.stopping_since = now
+            rt.stop_killed = False
+            self.sup._stopping_event(operation.project, rt, f"for {operation.kind}")
             log.info("operation %s: SIGTERM to db-sync pid %s", operation.pk, child.pid)
             return operations.Wait(f"SIGTERM sent to db-sync pid {child.pid}")
-        if now - rt.stopping_since > STOP_GRACE:
+        if now - rt.stopping_since > STOP_GRACE and not rt.stop_killed:
+            rt.stop_killed = True
             child.kill()
             log.warning("operation %s: db-sync pid %s ignored SIGTERM; SIGKILL", operation.pk, child.pid)
             return operations.Wait(f"SIGKILL sent to pid {child.pid} after {STOP_GRACE}s")
         return operations.Wait(f"waiting for pid {child.pid} to exit")
+
+    @staticmethod
+    def _resolve_all(project, why: str):
+        """Every active condition goes through conditions.resolve, so the
+        dedup pairing and the recovery mail work (2026-10-20d, finding 1).
+        mergin_unreachable's mail is grouped per server and not sent here."""
+        for key in list(project.active_conditions or {}):
+            conditions.resolve(project, key, f"resolved: {why}", mail=(key != Supervisor.MERGIN_KEY))
 
     def pre_remove_hook(self, operation):
         """Start the hook in a worker thread and wait across ticks (slice 13)."""
@@ -1041,6 +1079,7 @@ class SupervisorIO:
     def mark_removed(self, operation):
         project = operation.project
         now = timezone.now()
+        self._resolve_all(project, "sync removed")
         SyncConnection.objects.filter(project=project).delete()
         SyncStatus.objects.filter(project=project).delete()
         SyncProject.objects.filter(pk=project.pk).update(
@@ -1072,6 +1111,7 @@ class SupervisorIO:
 
     def reset(self, operation):
         project = operation.project
+        self._resolve_all(project, "re-initialised")
         SyncStatus.objects.filter(project=project).delete()
         init_from = operation.params.get("init_from") or project.init_from
         SyncProject.objects.filter(pk=project.pk).update(
