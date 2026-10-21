@@ -34,6 +34,7 @@ from registry.crypto import SecretError
 from registry.models import Event, Hook, Operation, SyncConnection, SyncProject, SyncRun, SyncStatus
 
 from . import alerts, check, conditions, dbinspect, exits, hooks, housekeeping, logtail, operations, processes, scheduling
+from . import verify as verify_mod
 from .config_render import ConfigRenderError, render_config, write_config
 from .logs import rotate_if_needed, tail
 
@@ -268,10 +269,13 @@ class Supervisor:
         self.open_operations = {}
         touched = set()   # projects whose registry rows an operation changed this tick
         for operation in Operation.objects.filter(status__in=Operation.OPEN_STATUSES).select_related("project"):
-            self.open_operations[operation.project_id] = operation
+            owns = operation.kind != Operation.Kind.VERIFY   # verify reads only; the daemon keeps running
+            if owns:
+                self.open_operations[operation.project_id] = operation
             if operation.status == Operation.Status.FAILED:
                 continue
-            touched.add(operation.project_id)
+            if owns:
+                touched.add(operation.project_id)
             try:
                 outcome = operations.advance(operation, self.io)
             except DatabaseError:
@@ -1091,6 +1095,31 @@ class SupervisorIO:
         self.sup.runtimes.pop(project.pk, None)
         events.info(project, "sync removed" + (" and schemas dropped" if operation.params.get("drop_schemas") else ""))
         return "project marked removed; connections and status rows deleted"
+
+    # -- verify (slice 15, B) --------------------------------------------------------
+
+    def verify(self, operation):
+        """Compare every connection's checkout GeoPackage with its base schema
+        (geodiff, read-only). A difference raises checkout_inconsistent as the
+        daemon's own detection does; a comparison that could not run fails the step."""
+        project = operation.project
+        result = verify_mod.verify_project(project)
+        operation.params = {**(operation.params or {}), "result": result}
+        text = verify_mod.describe(result)
+        differing = [f for f, e in result["connections"].items() if e.get("tables")]
+        errors = [e["error"] for e in result["connections"].values() if e.get("error")]
+        if differing:
+            conditions.activate(
+                project, exits.CHECKOUT_INCONSISTENT,
+                f"verify found the checkout and the base schema out of sync: {text}. Use Re-init on the project "
+                "page (dump the installation's own schema first, docs/backup.md)",
+                level=Event.Level.ERROR,
+            )
+        elif errors:
+            raise operations.StepFailed(f"verify could not compare: {'; '.join(errors)}")
+        else:
+            events.info(project, f"verify: {text} ({result['seconds']}s)")
+        return f"{text} ({result['seconds']}s)"
 
     # -- reinit ---------------------------------------------------------------------
 

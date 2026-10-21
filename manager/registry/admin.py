@@ -14,6 +14,7 @@ from django.urls import reverse
 from supervisor import dbinspect
 
 from .models import (
+    ApiToken,
     Database,
     Event,
     Hook,
@@ -140,6 +141,24 @@ class HookAdmin(OwnedAdmin):
             # A project pointing at a hook of the wrong kind would fail silently.
             fields.append("kind")
         return fields
+
+
+@admin.register(ApiToken)
+class ApiTokenAdmin(admin.ModelAdmin):
+    """The secret is generated here and shown once, in the success message."""
+
+    list_display = ["name", "user", "prefix", "created_at", "last_used_at", "revoked"]
+    list_filter = ["revoked", "user"]
+    fields = ["name", "user", "revoked", "prefix", "created_at", "last_used_at"]
+    readonly_fields = ["prefix", "created_at", "last_used_at"]
+
+    def save_model(self, request, obj, form, change):
+        if not change:
+            raw = ApiToken.generate()
+            obj.token_hash = ApiToken.hash(raw)
+            obj.prefix = raw[:8]
+            messages.success(request, f"Token for '{obj.name}', shown once, copy it now: {raw}")
+        super().save_model(request, obj, form, change)
 
 
 @admin.register(InstallationSettings)

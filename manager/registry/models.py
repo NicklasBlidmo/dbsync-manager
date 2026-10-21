@@ -6,6 +6,9 @@ from these rows and never read back (§6). Field-level comments point at
 the design section that defines the semantics.
 """
 
+import hashlib
+import secrets
+
 from django.conf import settings
 from django.contrib.postgres.fields import ArrayField
 from django.db import models
@@ -416,6 +419,11 @@ class SyncStatus(models.Model):
     checked_at = models.DateTimeField(null=True, blank=True)
     check_error = models.TextField(blank=True)
     last_ok_check_at = models.DateTimeField(null=True, blank=True)
+    # Slice 15: content comparison base vs modified per table (counts and a
+    # capped sample, supervisor/content.py) and the GeoPackage's layer list.
+    content_diff = models.JSONField(default=dict, blank=True)
+    content_checked_at = models.DateTimeField(null=True, blank=True)
+    tables = models.JSONField(default=list, blank=True)
 
     class Meta:
         verbose_name_plural = "sync statuses"
@@ -451,6 +459,45 @@ class Event(models.Model):
 
     def __str__(self):
         return f"[{self.level}] {self.message[:60]}"
+
+
+# --- API tokens (slice 15) -----------------------------------------------------
+
+
+class ApiToken(models.Model):
+    """A bearer token for the JSON API. The secret is shown once at creation
+    and stored as a SHA-256 hash; the token acts as its user, so the groups
+    decide what it may read and do."""
+
+    name = models.CharField(max_length=100, unique=True,
+                            help_text="The tool that holds the token, e.g. 'akdb' or 'MerginQA'; shown in the event log.")
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="api_tokens",
+                             help_text="The token acts as this user: its groups decide what it may read and do.")
+    token_hash = models.CharField(max_length=64, unique=True, editable=False)
+    prefix = models.CharField(max_length=8, editable=False, help_text="The first characters of the token, to tell tokens apart.")
+    created_at = models.DateTimeField(default=timezone.now, editable=False)
+    last_used_at = models.DateTimeField(null=True, blank=True, editable=False)
+    revoked = models.BooleanField(default=False, help_text="A revoked token is refused; create a new one to rotate.")
+
+    class Meta:
+        ordering = ["name"]
+        verbose_name = "API token"
+
+    def __str__(self):
+        return f"{self.name} ({self.prefix}..., {self.user})"
+
+    @staticmethod
+    def generate() -> str:
+        return secrets.token_urlsafe(32)
+
+    @staticmethod
+    def hash(raw: str) -> str:
+        return hashlib.sha256(raw.encode()).hexdigest()
+
+    @classmethod
+    def authenticate(cls, raw: str):
+        """The live token for a secret, or None."""
+        return cls.objects.select_related("user").filter(token_hash=cls.hash(raw), revoked=False, user__is_active=True).first()
 
 
 # --- installation (slice 14b) ------------------------------------------------
@@ -496,6 +543,7 @@ class Operation(models.Model):
     class Kind(models.TextChoices):
         REMOVE = "remove", "remove"
         REINIT = "reinit", "re-initialise"
+        VERIFY = "verify", "verify"          # checkout GeoPackage vs base, read-only (slice 15)
 
     class Status(models.TextChoices):
         PENDING = "pending", "pending"

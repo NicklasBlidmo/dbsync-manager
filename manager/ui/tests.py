@@ -111,6 +111,22 @@ class PagesTests(TestCase):
             response = self.client.post(url, data, follow=True)
         self.assertContains(response, "connection refused")
 
+    def test_verify_button_starts_the_operation_once(self):
+        from registry.models import Operation
+
+        self.client.login(username="operator", password="pw")
+        page = self.client.get(reverse("project", args=[self.project.pk]))
+        self.assertContains(page, ">Verify</button>")
+        self.assertContains(page, "Tables <span")
+        self.assertContains(page, "/api/v1/projects/")
+        response = self.client.post(reverse("project_verify", args=[self.project.pk]))
+        self.assertRedirects(response, reverse("project", args=[self.project.pk]))
+        operation = Operation.objects.get(project=self.project)
+        self.assertEqual((operation.kind, operation.status), ("verify", "pending"))
+        self.assertEqual(self.client.post(reverse("project_verify", args=[self.project.pk])).status_code, 409)
+        self.client.login(username="viewer", password="pw")
+        self.assertEqual(self.client.post(reverse("project_verify", args=[self.project.pk])).status_code, 403)
+
     def test_no_recipients_is_flagged_until_a_default_list_exists(self):
         from registry.models import InstallationSettings
 

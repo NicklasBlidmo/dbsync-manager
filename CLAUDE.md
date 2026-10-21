@@ -79,6 +79,10 @@ Invariants learned the hard way:
   the upstream 2.3.0 sources and the `*.patched` results;
   `supervisor/tests_patches.py` applies the patches as the Dockerfile does
   and fails if they drift.
+- The JSON API (`manager/api/`) is versioned at `/api/v1/` and read-only
+  except verify; within v1 fields are added, never renamed or removed
+  (`docs/api.md`). Pages and the API read the same structures from
+  `supervisor/facts.py`; put new facts there, not in a view.
 - db-sync exits are classified (`supervisor/exits.py`): deterministic ones
   are not restarted (condition, health `failed`), Mergin connectivity ones
   feed `mergin_unreachable`; only the rest count towards `process_crashed`.

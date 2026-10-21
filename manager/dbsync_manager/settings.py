@@ -72,6 +72,7 @@ INSTALLED_APPS = [
     "django.contrib.postgres",
     "registry.apps.RegistryConfig",
     "supervisor.apps.SupervisorConfig",
+    "api.apps.ApiConfig",
 ]
 
 MIDDLEWARE = [
@@ -216,6 +217,8 @@ DBSYNC_CHECK_INTERVAL = env_int("DBSYNC_CHECK_INTERVAL", 300)
 DBSYNC_STUCK_AFTER = env_int("DBSYNC_STUCK_AFTER", 1800)
 # A Mergin outage (5xx, refused, timeout) mails only once it has lasted this long.
 DBSYNC_MERGIN_DOWN_ALERT_AFTER = env_int("DBSYNC_MERGIN_DOWN_ALERT_AFTER", 900)
+# Compare base and modified content (not only counts) at every check (slice 15).
+DBSYNC_CONTENT_CHECK = env_bool("DBSYNC_CONTENT_CHECK", True)
 
 # Public address of the UI, for links in alert mails (optional).
 DBSYNC_BASE_URL = env("DBSYNC_BASE_URL", "")

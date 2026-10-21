@@ -17,6 +17,7 @@ can act on.
              → delete_workdir → mark_removed
     reinit:  block → stop_child → snapshot_pending → pre_remove_hook
              → drop_schemas → delete_workdir → reset
+    verify:  verify (read-only; the daemon keeps running, slice 15)
 
 Cancel is offered only before `drop_schemas` has started; after that the
 only way forward is retry.
@@ -28,6 +29,7 @@ from registry.models import Operation
 
 REMOVE_STEPS = ["block", "stop_child", "pre_remove_hook", "drop_schemas", "delete_workdir", "mark_removed"]
 REINIT_STEPS = ["block", "stop_child", "snapshot_pending", "pre_remove_hook", "drop_schemas", "delete_workdir", "reset"]
+VERIFY_STEPS = ["verify"]
 FIRST_DESTRUCTIVE_STEP = "drop_schemas"
 
 class Wait:
@@ -49,7 +51,11 @@ class Interrupted(Exception):
 
 
 def steps_for(operation) -> list:
-    return REINIT_STEPS if operation.kind == Operation.Kind.REINIT else REMOVE_STEPS
+    if operation.kind == Operation.Kind.REINIT:
+        return REINIT_STEPS
+    if operation.kind == Operation.Kind.VERIFY:
+        return VERIFY_STEPS
+    return REMOVE_STEPS
 
 
 def destructive_started(operation) -> bool:

@@ -25,6 +25,7 @@ REGISTRY_MODELS = (
     "event",
     "operation",
     "installationsettings",
+    "apitoken",
 )
 
 OPERATOR_WRITE = {

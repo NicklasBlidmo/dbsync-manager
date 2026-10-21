@@ -17,6 +17,20 @@
     {% endif %}
   </div>
   {% if operation.error %}<div class="notice bad">{{ operation.error }}</div>{% endif %}
+  {% if operation.kind == "verify" and operation.params.result %}
+  <table class="table">
+    <thead><tr><th>GeoPackage</th><th>Checkout vs base</th><th>Detail</th></tr></thead>
+    <tbody>
+    {% for sync_file, entry in operation.params.result.connections.items %}
+      <tr>
+        <td>{{ sync_file }}</td>
+        <td>{% if entry.ok %}<span class="badge ok">in sync</span>{% elif entry.error %}<span class="badge warn">not compared</span>{% else %}<span class="badge bad">differs</span>{% endif %}</td>
+        <td class="muted">{% if entry.error %}{{ entry.error }}{% else %}{% for t in entry.tables %}{{ t.table }}: {{ t.insert }} inserted, {{ t.update }} updated, {{ t.delete }} deleted{% if not forloop.last %}; {% endif %}{% endfor %}{% endif %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
   <table class="table">
     <thead><tr><th>#</th><th>Step</th><th>Started</th><th>Result</th><th>Detail</th></tr></thead>
     <tbody>

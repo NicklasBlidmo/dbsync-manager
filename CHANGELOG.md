@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Slice 15 (brief 2026-10-21): the check compares the content of base
+  and modified per table (one statement with a FULL OUTER JOIN on the
+  GeoPackage key, IS DISTINCT FROM per column, EWKB bytes for
+  geometries), stores the three counts and a sample of up to 200 rows on
+  the status row, and raises `content_divergence:<file>:<table>` at
+  error level in a one-way project; in a two-way project it is shown,
+  with an info event when it appears and when it clears.
+  `DBSYNC_CONTENT_CHECK=false` switches it off. The project page has a
+  Tables section (layers, geometry column, schemas, skipped). A
+  `verify` operation (project page button, `manage.py verify`, API)
+  compares the checkout GeoPackage with base through geodiff, read-only,
+  and raises `checkout_inconsistent` on a difference. A read-only JSON
+  API under `/api/v1/` with bearer tokens from the admin (`docs/api.md`).
 - Slice 14b (field test 2026-10-20d): Re-init and Remove resolve every
   active condition (resolved event and recovery mail); an installation
   default list of alert recipients under Settings → Installation

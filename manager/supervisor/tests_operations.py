@@ -32,7 +32,7 @@ class FakeIO:
         return f"{name} done"
 
     def __getattr__(self, name):
-        if name in operations.REMOVE_STEPS or name in operations.REINIT_STEPS:
+        if name in operations.REMOVE_STEPS or name in operations.REINIT_STEPS or name in operations.VERIFY_STEPS:
             return lambda operation: self._step(name, operation)
         raise AttributeError(name)
 
@@ -48,6 +48,15 @@ class AdvanceTests(SimpleTestCase):
 
     def save(self):
         self.saves += 1
+
+    def test_verify_is_one_read_only_step_and_can_be_cancelled(self):
+        io = FakeIO()
+        op = make_op(kind="verify")
+        self.assertEqual(operations.steps_for(op), ["verify"])
+        self.assertTrue(can_cancel(op))
+        self.assertEqual(advance(op, io, save=self.save), "done")
+        self.assertEqual(io.calls, ["verify"])
+        self.assertFalse(operations.destructive_started(op))
 
     def test_remove_runs_every_step_in_order_and_logs_them(self):
         io = FakeIO()

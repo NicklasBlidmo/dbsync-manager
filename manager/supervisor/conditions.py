@@ -21,7 +21,9 @@ from registry.models import Event, SyncProject
 from . import alerts
 
 # Prefixes the consistency check owns; apply() touches no other condition.
-CHECK_CONDITION_PREFIXES = ("divergence:", "db_behind", "stranded_db_edits", "stuck", "check_failed")
+CHECK_CONDITION_PREFIXES = ("divergence:", "db_behind", "stranded_db_edits", "stuck", "check_failed", "content_divergence:")
+# Conditions the check raises at error level rather than warning.
+ERROR_PREFIXES = ("content_divergence:",)
 
 
 NO_RECIPIENTS = ("alert not mailed: no recipients on the project and no default list under "
@@ -94,6 +96,7 @@ def apply(project, wanted: set, messages: dict, managed=CHECK_CONDITION_PREFIXES
     active = dict(project.active_conditions or {})
     current = {key for key in active if key.startswith(managed)}
     for key in sorted(wanted - current):
-        activate(project, key, messages.get(key, key))
+        level = Event.Level.ERROR if key.startswith(ERROR_PREFIXES) else Event.Level.WARNING
+        activate(project, key, messages.get(key, key), level=level)
     for key in sorted(current - wanted):
         resolve(project, key)

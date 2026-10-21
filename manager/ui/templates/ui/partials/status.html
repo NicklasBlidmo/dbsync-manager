@@ -17,6 +17,7 @@
         {% else %}
         <form class="inline" method="post" action="{% url 'project_action' project.pk 'resume' %}">{% csrf_token %}<button type="submit">Resume</button></form>
         {% endif %}
+        <form class="inline" method="post" action="{% url 'project_verify' project.pk %}">{% csrf_token %}<button type="submit" title="compare the checkout GeoPackage with the base schema (geodiff), read-only; the daemon keeps running">Verify</button></form>
         <a class="button{% if needs_reinit %} primary{% endif %}" href="{% url 'project_operation' project.pk 'reinit' %}"{% if needs_reinit %} title="the checkout and the database no longer agree; Re-init rebuilds the sync schemas from Mergin"{% endif %}>Re-init</a>
         <a class="button" href="{% url 'project_operation' project.pk 'remove' %}">Remove</a>
         {% endif %}

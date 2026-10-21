@@ -22,7 +22,8 @@ from django.views.decorators.http import require_GET, require_POST
 
 from registry import events
 from registry.models import Database, Event, Hook, InstallationSettings, MerginAccount, Operation, SyncProject
-from supervisor import mergin_api, operations as opsm
+from supervisor import content, facts, mergin_api, operations as opsm
+from supervisor import verify as verify_mod
 from supervisor.logs import tail
 from supervisor.processes import LOG_NAME, STDERR_NAME
 
@@ -87,14 +88,7 @@ def _project_rows(qs):
 
 
 def _project_direction(statuses):
-    directions = {s.direction for s in statuses if s.direction}
-    if not directions:
-        return None
-    if "db_edits_cannot_push" in directions:
-        return "db_edits_cannot_push"
-    if "two_way" in directions:
-        return "two_way"
-    return "one_way"
+    return facts.project_direction(statuses)
 
 
 @login_required
@@ -137,8 +131,14 @@ def _table_rows(status):
             badges.append(("muted", "mismatch once"))
         if pending:
             badges.append(("warn", "interrupted pull, not user edits") if interrupted else ("info", "pending database changes"))
+        # Content base vs modified (slice 15, A): a condition in a one-way
+        # project, the normal state between pushes in a two-way one.
+        diff = (status.content_diff or {}).get(t)
+        if diff and content.total(diff):
+            one_way = status.direction in ("one_way", "db_edits_cannot_push")
+            badges.append(("bad" if one_way else "info", f"content: {content.summarize(diff)}"))
         rows.append({"table": t, "gpkg": gpkg, "base": base, "modified": modified, "streak": streak,
-                     "pending": pending, "badges": badges,
+                     "pending": pending, "badges": badges, "content": diff if diff and content.total(diff) else None,
                      "agree": gpkg is not None and gpkg == base == modified})
     return rows, interrupted
 
@@ -289,6 +289,8 @@ def project_detail(request, pk):
     project = get_object_or_404(SyncProject, pk=pk)
     context = _project_context(project)
     context.update(_events_context(project, request))
+    context["tables"] = facts.tables_for(project)
+    context["verification"] = facts.verification_for(project)
     context["can_operate"] = request.user.has_perm("registry.change_syncproject")
     context["now_date"] = _today()
     context.update(_log_context(project))
@@ -497,6 +499,21 @@ def scheduled_run_now(request, pk):
     events.record(None, Event.Level.INFO, f"{request.user.get_username()} requested the scheduled hook '{hook.name}'",
                   source=Event.Source.USER, user=request.user)
     return redirect("scheduled", pk=hook.pk)
+
+
+@login_required
+@permission_required("registry.add_operation", raise_exception=True)
+@require_POST
+def project_verify(request, pk):
+    """Start the verify operation (slice 15, B): checkout GeoPackage vs base, read-only."""
+    project = get_object_or_404(SyncProject, pk=pk, removed_at__isnull=True)
+    try:
+        operation = verify_mod.request_verify(project, request.user)
+    except verify_mod.VerifyConflict as exc:
+        return _conflict(project, exc.operation)
+    events.record(project, Event.Level.INFO, f"{request.user.get_username()} requested verify (operation {operation.pk})",
+                  source=Event.Source.USER, user=request.user)
+    return redirect("project", pk=project.pk)
 
 
 # --- Pause all / Resume all (review note 2026-10-20b, finding 6) ---------------------

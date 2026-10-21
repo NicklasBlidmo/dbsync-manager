@@ -71,6 +71,30 @@
   {% include "ui/partials/runs.html" %}
 </div>
 
+<details class="section">
+  <summary class="section-title">Tables <span class="muted">· {{ tables|length }} GeoPackage{{ tables|length|pluralize }} · layers and the schemas they sync into, as the last check read them{% if verification %} · last verify {{ verification.requested_at|isotime:"Y-m-d H:i" }}: {% if verification.ok %}in sync{% elif verification.ok is False %}differs{% else %}{{ verification.status }}{% endif %}{% endif %}</span></summary>
+  {% for entry in tables %}
+  <h3 class="section-title">{{ entry.sync_file }} <span class="muted">→ {{ entry.modified_schema }} / {{ entry.base_schema }}</span></h3>
+  <table class="table">
+    <thead><tr><th>Layer</th><th>Geometry column</th><th>Synced</th></tr></thead>
+    <tbody>
+    {% for layer in entry.layers %}
+      <tr>
+        <td>{{ layer.name }}</td>
+        <td class="muted">{{ layer.geometry_column|default:"–" }}</td>
+        <td>{% if layer.synced %}<span class="badge ok">yes</span>{% else %}<span class="badge muted">no ({{ layer.skipped_by }})</span>{% endif %}</td>
+      </tr>
+    {% empty %}
+      <tr><td colspan="3" class="muted">not checked yet</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% empty %}
+  <p class="muted">This project has no connections.</p>
+  {% endfor %}
+  <p class="muted">The same structure, with the project's state, is <code>GET /api/v1/projects/{{ project.pk }}/</code> (docs/api.md).</p>
+</details>
+
 <details class="section"{% if hooks_open %} open{% endif %}>
   <summary class="section-title">Hooks <span class="muted">· {{ hook_runs|length }} run{{ hook_runs|length|pluralize }}{% if hooks_latest %} · latest {{ hooks_latest|date:"H:i:s" }}{% endif %} · output is masked and capped, design §8</span></summary>
   <div id="hooks" hx-get="{% url 'project_hooks' project.pk %}" hx-trigger="every 15s" hx-swap="innerHTML">

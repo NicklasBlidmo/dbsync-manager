@@ -258,6 +258,34 @@ server: check `docker compose exec manager pg_dump --version`, and if
 the server is newer set `PG_CLIENT_MAJOR=<server major>` in `.env` and
 rebuild, which installs that client from apt.postgresql.org.
 
+### Tables, content checks and verify
+
+The project page's **Tables** section lists every layer of each
+GeoPackage with its geometry column and the `modified`/`base` schemas it
+syncs into, and whether `skip_tables`/`include_tables` leaves it out.
+
+The check compares not only row counts but the content of `base` and
+`modified` per table (one statement per table pair, geometries on their
+EWKB bytes). In a one-way project any difference is the condition
+`content_divergence` (someone wrote into `modified` directly); in a
+two-way project it is the normal state between pushes and only shown,
+with an event when it appears and when it clears. `DBSYNC_CONTENT_CHECK=false`
+in `.env` switches the comparison off.
+
+**Verify** (project page, operators) compares the checkout GeoPackage
+with `base` through geodiff, the way db-sync's own init check does,
+read-only while the daemon keeps running. A difference raises
+`checkout_inconsistent` with the same mail and Re-init path as the
+daemon's own detection. Also `manage.py verify --project <id>` and the
+API below; a daily run is a scheduled hook that calls the API.
+
+### JSON API
+
+Tools next to the manager read every project's state and table list,
+and start verify, through `/api/v1/` with a bearer token created under
+Settings → API tokens. [docs/api.md](docs/api.md) has the endpoints,
+the JSON shapes and the stability promise.
+
 ### E-mail
 
 Alerts go to the project's recipients, or, when the project has none, to

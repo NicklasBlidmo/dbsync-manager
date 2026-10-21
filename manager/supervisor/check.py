@@ -19,6 +19,7 @@ a half-applied pull (when db_version is behind).
 import json
 import logging
 import sqlite3
+import time
 from contextlib import closing
 from dataclasses import dataclass, field
 from datetime import timedelta
@@ -27,9 +28,10 @@ from pathlib import Path
 from django.conf import settings
 from django.utils import timezone
 
+from registry import events
 from registry.models import SyncProject, SyncStatus
 
-from . import dbinspect, mergin_api
+from . import content, dbinspect, mergin_api
 
 log = logging.getLogger("supervisor.check")
 
@@ -95,6 +97,11 @@ class Observed:
     error: str = ""      # the check failed; previous values are kept
     warning: str = ""    # a best-effort part failed; the check still counts
     mergin_unreachable: str = ""   # transient API failure: server facts carried forward, condition raised by core
+    # Slice 15: content comparison base vs modified ({table: content.shape}) and the
+    # GeoPackage's layer list ([{name, geometry_column}]); None = not read.
+    content_checked: bool = False
+    content_diff: dict = field(default_factory=dict)
+    tables: list | None = None
 
 
 # --- gathering (I/O) ---------------------------------------------------------
@@ -220,10 +227,13 @@ def gather(project, connections) -> dict:
     # Database: comments, counts, writers (one connection).
     db_error = ""
     writers_error = ""
+    content_error = ""
+    content_by_conn = {}
     comments = {}
     db_counts_by_conn = {}
     writers_by_conn = {}
     tables_by_conn = {}
+    keys_by_conn = {}
     gpkg_error_by_conn = {}
     for conn in connections:
         checkout = conn.checkout_dir
@@ -231,9 +241,13 @@ def gather(project, connections) -> dict:
         try:
             obs.local_version = local_version_of(checkout)
             gpkg_path = checkout / conn.sync_file
-            tables = select_tables(gpkg_tables(gpkg_path), conn.skip_tables, conn.include_tables)
+            all_tables = gpkg_tables(gpkg_path)
+            tables = select_tables(all_tables, conn.skip_tables, conn.include_tables)
             tables_by_conn[conn.pk] = tables
             obs.gpkg_count = gpkg_counts(gpkg_path, tables)
+            geometry = content.gpkg_geometry_columns(gpkg_path)
+            obs.tables = [{"name": t, "geometry_column": geometry.get(t)} for t in all_tables]
+            keys_by_conn[conn.pk] = content.gpkg_primary_keys(gpkg_path, tables)
         except Exception as exc:  # noqa: BLE001
             gpkg_error_by_conn[conn.pk] = f"checkout: {exc}"
 
@@ -255,6 +269,31 @@ def gather(project, connections) -> dict:
                     writers_error = f"writers: {exc}"
                     writers_by_conn[conn.pk] = None
                     db.rollback()
+            # Content base vs modified for tables whose counts agree (slice 15,
+            # A); a count difference is covered by the count rules already.
+            if settings.DBSYNC_CONTENT_CHECK:
+                started = time.monotonic()
+                for conn in connections:
+                    base, modified = db_counts_by_conn.get(conn.pk, ({}, {}))
+                    candidates = content.tables_to_compare(tables_by_conn.get(conn.pk, []), base, modified)
+                    diffs = {}
+                    try:
+                        if candidates:
+                            base_cols = content.schema_columns(cursor, conn.base_schema)
+                            modified_cols = content.schema_columns(cursor, conn.modified_schema)
+                            keys = keys_by_conn.get(conn.pk, {})
+                            for table in candidates:
+                                spec = content.plan(table, keys.get(table, content.DEFAULT_KEY),
+                                                    base_cols.get(table, []), modified_cols.get(table, []))
+                                if spec is None:
+                                    continue
+                                diffs[table] = content.compare_table(cursor, conn.base_schema, conn.modified_schema, spec)
+                        content_by_conn[conn.pk] = diffs
+                    except Exception as exc:  # noqa: BLE001 - best effort, like the writers
+                        content_error = f"content: {exc}"
+                        db.rollback()
+                content_ms = int((time.monotonic() - started) * 1000)
+                log.info("content check for %s: %d ms over %d connection(s)", project, content_ms, len(connections))
     except Exception as exc:  # noqa: BLE001
         db_error = f"database: {exc}"
 
@@ -269,10 +308,13 @@ def gather(project, connections) -> dict:
         base, modified = db_counts_by_conn.get(conn.pk, ({}, {}))
         obs.base_count, obs.modified_count = base, modified
         obs.db_writers = writers_by_conn.get(conn.pk, [])
+        if conn.pk in content_by_conn:
+            obs.content_checked = True
+            obs.content_diff = content_by_conn[conn.pk]
         if not errors and obs.db_version is None:
             errors.append(f"base schema {conn.base_schema} has no db-sync comment yet")
         obs.error = "; ".join(errors)
-        obs.warning = writers_error
+        obs.warning = "; ".join(w for w in (writers_error, content_error) if w)
     return observed
 
 
@@ -393,6 +435,25 @@ def evaluate(status, obs, *, now, check_interval, stuck_after, process_running, 
             f"(account is Reader; writers: {', '.join(obs.db_writers or [])})"
         )
 
+    # Content base vs modified (slice 15, A): a one-way project has no
+    # legitimate writer into modified, so any deviation is a condition; in a
+    # two-way project it is the normal state between pushes and only shown.
+    if obs.tables is not None:
+        status.tables = list(obs.tables)
+    if obs.content_checked:
+        status.content_diff = dict(obs.content_diff)
+        status.content_checked_at = now
+        if status.direction in (Direction.ONE_WAY, Direction.DB_EDITS_CANNOT_PUSH):
+            for table, result in sorted(status.content_diff.items()):
+                if not content.total(result):
+                    continue
+                key = f"content_divergence:{label}:{table}"
+                conditions.add(key)
+                messages[key] = (
+                    f"{label}: table {table}: {content.summarize(result)} between base and modified "
+                    "(one-way project: database edits that cannot have come from the field)"
+                )
+
     # Stuck: server ahead, checkout not moving, daemon alive.
     server_ahead = obs.server_version is not None and obs.local_version is not None and obs.server_version > obs.local_version
     stuck = (
@@ -407,7 +468,7 @@ def evaluate(status, obs, *, now, check_interval, stuck_after, process_running, 
             f"since {status.local_version_changed_at:%Y-%m-%d %H:%M} while db-sync is running"
         )
 
-    if any(k.startswith(("divergence:", "stranded_db_edits:")) for k in conditions):
+    if any(k.startswith(("divergence:", "stranded_db_edits:", "content_divergence:")) for k in conditions):
         health = Health.DIVERGED
     elif any(k.startswith("db_behind:") for k in conditions):
         health = Health.BEHIND
@@ -448,6 +509,7 @@ def run_project_check(project, *, process_running: bool, now=None):
     for conn in connections:
         status, _ = SyncStatus.objects.get_or_create(connection=conn, defaults={"project": project})
         previous_health = getattr(status, "_health", None)
+        content_before = {t for t, r in (status.content_diff or {}).items() if content.total(r)}
         health, conds, msgs = evaluate(
             status,
             observed[conn.pk],
@@ -458,6 +520,14 @@ def run_project_check(project, *, process_running: bool, now=None):
             label=conn.sync_file,
         )
         status.save()
+        if observed[conn.pk].content_checked and not any(k.startswith("content_divergence:") for k in conds):
+            # Two-way: no condition, but the history shows when it started and ended.
+            content_after = {t: r for t, r in (status.content_diff or {}).items() if content.total(r)}
+            if content_after and not content_before:
+                events.info(project, f"{conn.sync_file}: content differs between base and modified: "
+                                     + "; ".join(f"{t}: {content.summarize(r)}" for t, r in sorted(content_after.items())))
+            elif content_before and not content_after:
+                events.info(project, f"{conn.sync_file}: base and modified agree again")
         if health is None:
             health = project.health if project.health != Health.UNKNOWN else previous_health
         healths.append(health)
