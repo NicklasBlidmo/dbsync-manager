@@ -3,9 +3,11 @@
 # Built on the unmodified db-sync image; the manager is added on top and
 # db-sync's daemon is started per project by the supervisor as a subprocess.
 # Bump DBSYNC_VERSION to upgrade db-sync. Patches in patches/ are applied at
-# build time and the directory is empty once upstream has shipped the fix.
+# build time; a patch is deleted once upstream has shipped the fix (0001 did
+# in 2.4.0). The tag is the release number on Docker Hub
+# (lutraconsulting/mergin-db-sync:2.4.0, published 2026-10-19).
 
-ARG DBSYNC_VERSION=2.3.0
+ARG DBSYNC_VERSION=2.4.0
 FROM lutraconsulting/mergin-db-sync:${DBSYNC_VERSION}
 
 ARG S6_OVERLAY_VERSION=3.2.0.0
@@ -38,8 +40,8 @@ RUN if [ -n "$PG_CLIENT_MAJOR" ]; then \
         rm -rf /var/lib/apt/lists/*; \
     fi
 
-# --- db-sync patches (only dbsync.py exists in the image; the patch also
-#     touches CHANGELOG.md and docs/, which are skipped) ---
+# --- db-sync patches (only the .py files exist in the image; anything else
+#     a patch touches is skipped) ---
 COPY patches/ /tmp/patches/
 RUN set -e; cd /mergin-db-sync; \
     for p in /tmp/patches/*.patch; do \

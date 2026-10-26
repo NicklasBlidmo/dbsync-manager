@@ -1,5 +1,6 @@
 # Manager dependencies, installed on top of the db-sync image (design §10).
-# mergin-client, psycopg2 and dynaconf are already present in the base image.
+# mergin-client (0.15.0 in db-sync 2.4.0), psycopg2, dynaconf and the pinned
+# geodiff come from the base image; nothing db-sync needs is listed here.
 Django>=5.2,<5.3
 psycopg[binary]>=3.2
 cryptography>=43

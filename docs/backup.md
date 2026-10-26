@@ -154,8 +154,12 @@ pg_restore -d <db> -n '<prefix>_s_*' -n '<prefix>_b_*' --clean --if-exists dump.
 After restoring synced schemas, the project's checkout in `/data` may be at
 a newer version than the restored base schema. Use re-init from the
 database side if the restored data is the source of truth, or let the
-manager re-download the checkout (delete the project's work dir; db-sync
-downloads the version in the base schema comment on the next start).
+manager re-download the checkout (delete the connection's checkout
+directory `work/<project>-<modified schema>`; db-sync downloads the
+version in the base schema comment on the next start). The work dir also
+holds `work/.mergin_auth.json`, db-sync's Mergin session token: it is not
+part of any dump, and a restore needs nothing for it (db-sync logs in
+again and writes a new one).
 Design §10 "State, backup and recovery" describes choosing the source.
 
 ## Repair after an inconsistent checkout

@@ -22,7 +22,7 @@ from django.views.decorators.http import require_GET, require_POST
 
 from registry import events
 from registry.models import Database, Event, Hook, InstallationSettings, MerginAccount, Operation, SyncProject
-from supervisor import content, facts, mergin_api, operations as opsm
+from supervisor import content, facts, layout, mergin_api, operations as opsm
 from supervisor import verify as verify_mod
 from supervisor.logs import tail
 from supervisor.processes import LOG_NAME, STDERR_NAME
@@ -101,6 +101,9 @@ def home(request):
         "process_choices": SyncProject.ProcessState.choices,
         "health_choices": SyncProject.Health.choices,
         "can_add": request.user.has_perm("registry.add_syncproject"),
+        # Slice 16: projects whose checkout still has the db-sync 2.3.0 layout
+        # are not started until the migrate operation has run.
+        "migration_pending": layout.projects_needing_migration(),
     }
     context.update(_scheduled_context(request))
     return render(request, "ui/home.html", context)
@@ -601,6 +604,30 @@ ACTIONS = {
 
 def _open_operation(project):
     return project.operations.filter(status__in=Operation.OPEN_STATUSES).order_by("-requested_at").first()
+
+
+@login_required
+@permission_required("registry.add_operation", raise_exception=True)
+def migrate_checkouts(request):
+    """Slice 16, C10: one `migrate` operation per project in the old layout."""
+    candidates = layout.projects_needing_migration()
+    blocked = [p for p in candidates if _open_operation(p) is not None]
+    projects = [p for p in candidates if p not in blocked]
+    if request.method == "POST":
+        layout.request_migrations(projects, request.user)
+        return redirect("home")
+    return render(request, "ui/bulk.html", {
+        "title": "Migrate checkouts",
+        "subtitle": "db-sync 2.4.0 keeps one checkout per connection (work/<project>-<modified schema>) holding only "
+                    "the synced GeoPackage. One project at a time: the daemon stops between cycles, the old checkout "
+                    "tree is removed, the daemon starts and db-sync downloads one GeoPackage per connection at the "
+                    "database's version and compares it with base. Run Verify on every project first; a project "
+                    "that fails Verify needs Re-init instead.",
+        "lead": f"{len(projects)} project{'s' if len(projects) != 1 else ''} will be migrated, one at a time:",
+        "projects": projects, "skipped": blocked, "skipped_why": "an operation is open; migrate them when it is done",
+        "button": "Migrate checkouts", "action_url": request.path,
+        "empty": "No project has a checkout in the old layout.",
+    })
 
 
 def _conflict(project, operation):

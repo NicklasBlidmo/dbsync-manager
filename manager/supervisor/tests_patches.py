@@ -1,12 +1,14 @@
 """
 The db-sync patches in patches/ (applied at image build, Dockerfile):
 
-- both patches apply to the vendored upstream 2.3.0 sources exactly as
-  the Dockerfile applies them, and give patches/*.patched;
+- every patch applies to the vendored upstream 2.4.0 sources exactly as
+  the Dockerfile applies them, and gives patches/*.patched;
 - the SIGTERM handling of 0002 behaves (review note 2026-10-20b, finding
-  1): a stop request during a connection pull lets that pull finish and
-  skips the rest; a stop request during the sleep ends the daemon within
-  a second, exit code 0.
+  1; rebased on 2.4.0's retrying run_daemon in slice 16): a stop request
+  during a connection pull lets that pull finish and skips the rest; a
+  stop request during the sleep ends the daemon within a second, exit
+  code 0; a stop request during the pull step ends the cycle before push,
+  through 2.4.0's `except Exception` (SystemExit is not an Exception).
 
 The patched modules are loaded from patches/ with their dependencies
 (psycopg2, mergin, config, ...) stubbed. No database, no Mergin.
@@ -30,16 +32,19 @@ from django.test import SimpleTestCase
 ROOT = Path(__file__).resolve().parents[2]
 PATCHES = ROOT / "patches"
 GIT = shutil.which("git")
+SOURCES = ("dbsync.py", "dbsync_daemon.py")
 
 
 class PatchesApplyTests(SimpleTestCase):
-    def test_both_patches_apply_as_the_dockerfile_does(self):
+    def test_the_patches_apply_as_the_dockerfile_does(self):
         if GIT is None:
             self.skipTest("git not available")
+        patches = sorted(PATCHES.glob("*.patch"))
+        self.assertEqual([p.name for p in patches], ["0002-Stop-gracefully-on-SIGTERM.patch"])   # 0001 shipped in 2.4.0
         with tempfile.TemporaryDirectory() as tmp:
-            for name in ("dbsync.py", "dbsync_daemon.py"):
+            for name in SOURCES:
                 shutil.copy(PATCHES / "upstream" / name, Path(tmp) / name)
-            for patch in sorted(PATCHES.glob("*.patch")):
+            for patch in patches:
                 # -c core.autocrlf=false: the image is Linux; a Windows git
                 # would otherwise write CRLF and the comparison below fails.
                 result = subprocess.run(
@@ -47,9 +52,18 @@ class PatchesApplyTests(SimpleTestCase):
                     cwd=tmp, capture_output=True, text=True,
                 )
                 self.assertEqual(result.returncode, 0, f"{patch.name}: {result.stderr}")
-            for name in ("dbsync.py", "dbsync_daemon.py"):
+            for name in SOURCES:
                 applied = (Path(tmp) / name).read_bytes().replace(b"\r\n", b"\n")
                 self.assertEqual(applied, (PATCHES / f"{name}.patched").read_bytes(), name)
+
+    def test_upstream_sources_are_2_4_0(self):
+        daemon = (PATCHES / "upstream" / "dbsync_daemon.py").read_text(encoding="utf-8")
+        self.assertIn("def run_daemon(", daemon)                      # 2.4.0's retrying loop
+        self.assertIn("DEFAULT_MAX_FAILED_RETRIES = 10", daemon)
+        dbsync = (PATCHES / "upstream" / "dbsync.py").read_text(encoding="utf-8")
+        self.assertIn("def _get_work_dir(conn_cfg):", dbsync)          # #187 as upstream merged it
+        self.assertIn('f"{project_name}-{conn_cfg.modified}"', dbsync)
+        self.assertIn("class AuthTokenStore:", dbsync)                 # #190
 
 
 # --- loading the patched sources with stubs ----------------------------------------
@@ -81,6 +95,9 @@ class StubConfig:
     def as_int(self, key):
         return 30
 
+    def get(self, key, default=None, cast=None):
+        return default
+
     def __contains__(self, key):
         return False
 
@@ -92,6 +109,9 @@ def _stub_modules():
     mergin = StubModule("mergin")
     for exc in ("LoginError", "ClientError", "InvalidProject"):
         setattr(mergin, exc, type(exc, (Exception,), {}))
+    mergin_client = StubModule("mergin.client")
+    mergin_client.TokenError = type("TokenError", (Exception,), {})
+    mergin_client.decode_token_data = lambda token: {}
     config = StubModule("config")
     config.config = StubConfig()
     config.ConfigError = type("ConfigError", (Exception,), {})
@@ -100,7 +120,7 @@ def _stub_modules():
     config.get_ignored_tables = lambda conn: []
     config.get_include_tables = lambda conn: []
     version = StubModule("version")
-    version.__version__ = "2.3.0-test"
+    version.__version__ = "2.4.0-test"
     log_functions = StubModule("log_functions")
     log_functions.setup_logger = lambda *a, **k: None
 
@@ -113,8 +133,9 @@ def _stub_modules():
     psycopg2 = StubModule("psycopg2")
     psycopg2.extensions = StubModule("psycopg2.extensions")
     return {
-        "mergin": mergin, "config": config, "version": version, "log_functions": log_functions,
-        "smtp_functions": smtp, "psycopg2": psycopg2, "psycopg2.extensions": psycopg2.extensions,
+        "mergin": mergin, "mergin.client": mergin_client, "config": config, "version": version,
+        "log_functions": log_functions, "smtp_functions": smtp, "psycopg2": psycopg2,
+        "psycopg2.extensions": psycopg2.extensions,
     }
 
 
@@ -128,13 +149,18 @@ def _load(name, path):
 
 
 class PatchedDaemonTests(SimpleTestCase):
+    ARGV = ["dbsync_daemon.py", "config.yaml", "--skip-init"]
+
     def setUp(self):
         self.saved = {name: sys.modules.get(name) for name in
-                      ("mergin", "config", "version", "log_functions", "smtp_functions", "psycopg2",
-                       "psycopg2.extensions", "dbsync", "dbsync_daemon")}
+                      ("mergin", "mergin.client", "config", "version", "log_functions", "smtp_functions",
+                       "psycopg2", "psycopg2.extensions", "dbsync", "dbsync_daemon")}
         sys.modules.update(_stub_modules())
         self.dbsync = _load("dbsync", PATCHES / "dbsync.py.patched")
         self.daemon = _load("dbsync_daemon", PATCHES / "dbsync_daemon.py.patched")
+        self.dbsync._stop_requested = False
+        far = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=1)
+        self.dbsync.create_mergin_client = lambda: types.SimpleNamespace(_auth_session={"expire": far})
 
     def tearDown(self):
         for name, module in self.saved.items():
@@ -155,7 +181,6 @@ class PatchedDaemonTests(SimpleTestCase):
 
         dbsync.pull = pull
         dbsync.config.connections = ["c1", "c2", "c3"]
-        dbsync._stop_requested = False
         dbsync.dbsync_pull(mc=None)
         self.assertEqual(pulled, ["c1", "c1 done"])
         self.assertTrue(dbsync.stop_requested())
@@ -166,9 +191,6 @@ class PatchedDaemonTests(SimpleTestCase):
 
     def test_stop_during_the_sleep_exits_zero_within_a_second(self):
         dbsync, daemon = self.dbsync, self.daemon
-        dbsync._stop_requested = False
-        far = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=1)
-        dbsync.create_mergin_client = lambda: types.SimpleNamespace(_auth_session={"expire": far})
         pulls, pushes = [], []
         dbsync.dbsync_pull = lambda mc: pulls.append(time.monotonic())
 
@@ -178,11 +200,36 @@ class PatchedDaemonTests(SimpleTestCase):
 
         dbsync.dbsync_push = push
         started = time.monotonic()
-        with mock.patch.object(sys, "argv", ["dbsync_daemon.py", "config.yaml", "--skip-init"]), \
-                mock.patch("builtins.print"):
+        with mock.patch.object(sys, "argv", self.ARGV), mock.patch("builtins.print"):
             with self.assertRaises(SystemExit) as ctx:
                 daemon.main()                    # signal.signal needs the main thread
         elapsed = time.monotonic() - started
         self.assertEqual(ctx.exception.code, 0)
         self.assertEqual((len(pulls), len(pushes)), (1, 1))
         self.assertLess(elapsed, 3, "sleep_time is 30 s; the stop must end it within about a second")
+
+    def test_stop_during_pull_exits_zero_before_push_through_the_retry_loop(self):
+        # 2.4.0 wraps the cycle in `except Exception` and retries; the exit
+        # after pull must pass through it (SystemExit is a BaseException).
+        dbsync, daemon = self.dbsync, self.daemon
+        pushes = []
+        dbsync.dbsync_pull = lambda mc: dbsync.request_stop(15, None)
+        dbsync.dbsync_push = lambda mc: pushes.append(1)
+        with mock.patch.object(sys, "argv", self.ARGV), mock.patch("builtins.print"), \
+                mock.patch.object(daemon.time, "sleep") as sleep:
+            with self.assertRaises(SystemExit) as ctx:
+                daemon.main()
+        self.assertEqual(ctx.exception.code, 0)
+        self.assertEqual(pushes, [])
+        sleep.assert_not_called()                # no retry wait: this was not a failure
+
+    def test_sleep_unless_stopped_returns_early_and_the_retry_wait_uses_it(self):
+        dbsync, daemon = self.dbsync, self.daemon
+        with mock.patch.object(daemon.time, "sleep") as sleep:
+            daemon.sleep_unless_stopped(3)
+            self.assertEqual(sleep.call_count, 3)
+            dbsync.request_stop(15, None)
+            daemon.sleep_unless_stopped(600)
+            self.assertEqual(sleep.call_count, 3)   # not one more second
+        self.assertIn("sleep_unless_stopped(wait_time)", (PATCHES / "dbsync_daemon.py.patched").read_text(encoding="utf-8"))
+        self.assertNotIn("time.sleep(wait_time)", (PATCHES / "dbsync_daemon.py.patched").read_text(encoding="utf-8"))

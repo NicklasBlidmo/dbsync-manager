@@ -8,6 +8,7 @@ urlpatterns = [
     path("projects/table/", views.projects_table, name="projects_table"),
     path("projects/pause-all/", views.pause_all, name="pause_all"),
     path("projects/resume-all/", views.resume_all, name="resume_all"),
+    path("projects/migrate-checkouts/", views.migrate_checkouts, name="migrate_checkouts"),
     path("projects/<int:pk>/", views.project_detail, name="project"),
     path("projects/<int:pk>/status/", views.project_status, name="project_status"),
     path("projects/<int:pk>/log/", views.project_log, name="project_log"),

@@ -33,7 +33,7 @@ from registry import events
 from registry.crypto import SecretError
 from registry.models import Event, Hook, Operation, SyncConnection, SyncProject, SyncRun, SyncStatus
 
-from . import alerts, check, conditions, dbinspect, exits, hooks, housekeeping, logtail, operations, processes, scheduling
+from . import alerts, check, conditions, dbinspect, exits, hooks, housekeeping, layout, logtail, operations, processes, scheduling
 from . import verify as verify_mod
 from .config_render import ConfigRenderError, render_config, write_config
 from .logs import rotate_if_needed, tail
@@ -54,6 +54,7 @@ CRASH_REMIND_FIRST = 3600    # a crash loop that persists reminds after an hour 
 CRASH_REMIND_EVERY = 86400   # ...and then daily
 MERGIN_EXIT_DELAY = 60       # restart delay when the daemon exited because Mergin was unreachable (finding 3)
 AUTH_EXIT_BACKOFF_MAX = 300  # restart delay cap when Mergin refused the credentials
+REDOWNLOAD_TIMEOUT = 1800    # migrate: how long to wait for db-sync to download a project's checkouts (slice 16)
 # Stopping a daemon waits for its current pull or push: with patch 0002 it
 # exits at the next boundary, and a cycle over sixteen connections takes a
 # minute or two (2026-10-20b, finding 1). docker-compose.yml gives the
@@ -268,7 +269,7 @@ class Supervisor:
         # stop_child step's SIGTERM is seen as a stop, not a crash.
         self.open_operations = {}
         touched = set()   # projects whose registry rows an operation changed this tick
-        for operation in Operation.objects.filter(status__in=Operation.OPEN_STATUSES).select_related("project"):
+        for operation in Operation.objects.filter(status__in=Operation.OPEN_STATUSES).select_related("project").order_by("pk"):
             owns = operation.kind != Operation.Kind.VERIFY   # verify reads only; the daemon keeps running
             if owns:
                 self.open_operations[operation.project_id] = operation
@@ -399,6 +400,17 @@ class Supervisor:
         if not self._still_wanted(project):
             return
         paths = self._paths(project.pk)
+        if layout.needs_migration(paths["work_dir"], project.mergin_project):
+            # Slice 16, C10: the checkout tree of db-sync 2.3.0 is still there.
+            # Started now, db-sync would re-download every project at once;
+            # the migrate operation does it one project at a time, after Verify.
+            reason = ("not started: the checkout has the db-sync 2.3.0 layout; run 'Migrate checkouts' on the "
+                      "Projects page or manage.py migrate_checkouts (Verify every project first)")
+            if rt.blocked_reason != reason:
+                rt.blocked_reason = reason
+                events.warning(project, reason)
+            self._set_state(project, PS.BLOCKED, reason)
+            return
         try:
             text = render_config(
                 project,
@@ -1120,6 +1132,90 @@ class SupervisorIO:
         else:
             events.info(project, f"verify: {text} ({result['seconds']}s)")
         return f"{text} ({result['seconds']}s)"
+
+    # -- migrate checkouts (slice 16, C10) -------------------------------------------
+
+    def wait_turn(self, operation):
+        """One project at a time, so the Mergin server sees at most one
+        re-download: wait while another migrate operation is past this step."""
+        busy = (Operation.objects.filter(kind=Operation.Kind.MIGRATE, status=Operation.Status.RUNNING)
+                .exclude(pk=operation.pk).exclude(step__in=["", "wait_turn"])
+                .select_related("project").order_by("pk").first())
+        if busy is not None:
+            return operations.Wait(f"operation {busy.pk} on {busy.project.mergin_project} is migrating; one project at a time")
+        return "turn taken"
+
+    def remove_old_checkout(self, operation):
+        """Remove the 2.3.0 tree (<work>/<name>/<modified schema>) and write the
+        marker; db-sync downloads the new layout on the next start."""
+        project = operation.project
+        work_dir = self.sup._paths(project.pk)["work_dir"]
+        old = layout.legacy_checkout_tree(work_dir, project.mergin_project)
+        removed = old.is_dir()
+        if removed:
+            shutil.rmtree(old)
+        layout.mark_migrated(work_dir, f"operation {operation.pk}")
+        if removed:
+            events.info(project, f"old-layout checkout {old} removed; db-sync 2.4.0 downloads one GeoPackage per "
+                                 f"connection into {layout.working_dir(work_dir)}/<name>-<modified schema>")
+            return f"removed {old}; marker {layout.MARKER_NAME} written"
+        return f"no old-layout checkout at {old}; marker {layout.MARKER_NAME} written"
+
+    def redownload(self, operation):
+        """Start the daemon under the operation and wait until db-sync's init
+        has downloaded every connection's checkout (.mergin/mergin.json exists).
+        The operation owns the project meanwhile, so _reconcile does not run
+        for it; exits are handled here."""
+        project = operation.project
+        rt = self.sup.runtimes.setdefault(project.pk, Runtime())
+        params = dict(operation.params or {})
+        connections_ = self._connections(project)
+        pending = [c for c in connections_ if not layout.is_downloaded(c.checkout_dir)]
+        now = time.monotonic()
+        if rt.child is not None and not rt.child.alive:
+            # "stopped cleanly" after stop_child, or the crash bookkeeping.
+            self.sup._handle_exit(project, rt, now)
+        if not pending:
+            started_at = _parse_iso(params.get("download_started_at"))
+            took = f" in {_duration((timezone.now() - started_at).total_seconds())}" if started_at else ""
+            names = ", ".join(c.checkout_dir.name for c in connections_) or "none"
+            if params.get("started"):
+                events.info(project, f"checkouts downloaded{took} in the db-sync 2.4.0 layout "
+                                     f"({len(connections_)} connection{'s' if len(connections_) != 1 else ''}: {names})")
+            return f"{len(connections_)} checkout(s) present{took}: {names}"
+        if not self._wants_running(project):
+            return f"project is paused; db-sync downloads {len(pending)} checkout(s) when it is resumed"
+        if rt.child is None:
+            if params.get("started"):
+                operation.params = {**params, "started": False}
+                raise operations.StepFailed(
+                    "db-sync exited before the download finished; see the events and the stderr tail on the "
+                    "project page, fix the cause and retry (retry starts it again)")
+            self.sup._start(project, rt, now)
+            if rt.child is None:
+                raise operations.StepFailed(f"db-sync could not be started: {project.process_reason or 'see the project page'}")
+            operation.params = {**params, "started": True,
+                                "download_started_at": timezone.now().isoformat(timespec="seconds")}
+            return operations.Wait(f"db-sync started (pid {rt.child.pid}); downloading {len(pending)} checkout(s)")
+        started_at = _parse_iso(params.get("download_started_at"))
+        if started_at is None:
+            operation.params = {**params, "started": True,
+                                "download_started_at": timezone.now().isoformat(timespec="seconds")}
+        elif (timezone.now() - started_at).total_seconds() > REDOWNLOAD_TIMEOUT:
+            operation.params = {**params, "download_started_at": None}
+            raise operations.StepFailed(
+                f"the download has not finished within {_duration(REDOWNLOAD_TIMEOUT)}; db-sync keeps running "
+                f"(pid {rt.child.pid}); retry to keep waiting")
+        return operations.Wait(f"waiting for {len(pending)} checkout(s): " + ", ".join(c.sync_file for c in pending))
+
+    @staticmethod
+    def _connections(project):
+        return list(project.connections.all())
+
+    @staticmethod
+    def _wants_running(project) -> bool:
+        fresh = SyncProject.objects.filter(pk=project.pk).values("desired_state").first()
+        return fresh is not None and fresh["desired_state"] == SyncProject.DesiredState.RUNNING
 
     # -- reinit ---------------------------------------------------------------------
 

@@ -342,11 +342,12 @@ class SyncConnection(models.Model):
 
     @property
     def checkout_dir(self):
-        """With the #163 patch each connection has its own checkout under
-        db-sync's working_dir: <work_dir>/work/<project name>/<modified schema>
-        (supervisor.config_render.WORKING_SUBDIR)."""
-        project_name = self.project.mergin_project.split("/", 1)[-1]
-        return self.project.work_dir / "work" / project_name / self.modified_schema
+        """db-sync 2.4.0 keeps one checkout per connection (upstream #187):
+        <work_dir>/work/<project name>-<modified schema>. supervisor.layout
+        is the one place that knows the layout (slice 16)."""
+        from supervisor import layout   # registry must not import supervisor at module level
+
+        return layout.checkout_dir(self.project.work_dir, self.project.mergin_project, self.modified_schema)
 
 
 # --- observations (§5, §6) --------------------------------------------------
@@ -544,6 +545,7 @@ class Operation(models.Model):
         REMOVE = "remove", "remove"
         REINIT = "reinit", "re-initialise"
         VERIFY = "verify", "verify"          # checkout GeoPackage vs base, read-only (slice 15)
+        MIGRATE = "migrate", "migrate checkouts"   # one-off: db-sync 2.4.0 checkout layout (slice 16)
 
     class Status(models.TextChoices):
         PENDING = "pending", "pending"
@@ -555,7 +557,7 @@ class Operation(models.Model):
     OPEN_STATUSES = (Status.PENDING, Status.RUNNING, Status.FAILED)
 
     project = models.ForeignKey(SyncProject, on_delete=models.CASCADE, related_name="operations")
-    kind = models.CharField(max_length=6, choices=Kind.choices)
+    kind = models.CharField(max_length=10, choices=Kind.choices)
     params = models.JSONField(default=dict, blank=True)
     status = models.CharField(max_length=9, choices=Status.choices, default=Status.PENDING)
     step = models.CharField(max_length=40, blank=True)

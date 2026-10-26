@@ -32,7 +32,7 @@ class FakeIO:
         return f"{name} done"
 
     def __getattr__(self, name):
-        if name in operations.REMOVE_STEPS or name in operations.REINIT_STEPS or name in operations.VERIFY_STEPS:
+        if name in operations.REMOVE_STEPS + operations.REINIT_STEPS + operations.VERIFY_STEPS + operations.MIGRATE_STEPS:
             return lambda operation: self._step(name, operation)
         raise AttributeError(name)
 
@@ -57,6 +57,15 @@ class AdvanceTests(SimpleTestCase):
         self.assertEqual(advance(op, io, save=self.save), "done")
         self.assertEqual(io.calls, ["verify"])
         self.assertFalse(operations.destructive_started(op))
+
+    def test_migrate_waits_for_its_turn_then_runs_in_order_and_can_be_cancelled(self):
+        io = FakeIO()
+        op = make_op(kind="migrate")
+        self.assertEqual(operations.steps_for(op), ["wait_turn", "block", "stop_child", "remove_old_checkout", "redownload"])
+        self.assertTrue(can_cancel(op))
+        self.assertEqual(advance(op, io, save=self.save), "done")
+        self.assertEqual(io.calls, operations.MIGRATE_STEPS)
+        self.assertFalse(operations.destructive_started(op))   # nothing in the database is touched
 
     def test_remove_runs_every_step_in_order_and_logs_them(self):
         io = FakeIO()

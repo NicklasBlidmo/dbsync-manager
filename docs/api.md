@@ -29,10 +29,20 @@ browser session does not count. Without a valid token: `401` with
 Errors are `{"error": "<message>"}` with the HTTP status (401, 403, 404,
 405, 409).
 
+Use the address the UI is served on (`BIND_IP`/`HTTP_PORT` in `.env`;
+the port is usually bound to the server's LAN address, so `localhost`
+answers nothing). Pasting a token into `read -s` over SSH is
+error-prone; put it in a file once instead:
+
 ```sh
-TOKEN=...   # from the admin, once
-curl -sS -H "Authorization: Bearer $TOKEN" http://192.0.2.10:8090/api/v1/projects/ | python3 -m json.tool
+cat > ~/.apitoken      # paste the token, Enter, Ctrl-D
+chmod 600 ~/.apitoken
+TOKEN=$(tr -d '\r\n' < ~/.apitoken)
+curl -sS -w '\n%{http_code}\n' -H "Authorization: Bearer $TOKEN" http://192.0.2.10:8090/api/v1/projects/
 ```
+
+The last line printed is the status code; pipe the body through
+`python3 -m json.tool` once it is `200`.
 
 ## `GET /api/v1/projects/`
 
@@ -175,6 +185,8 @@ curl -fsS -X POST -H "Authorization: Bearer $DBSYNC_API_TOKEN" http://127.0.0.1:
                "requested_at": "...", "requested_by": "akdb", "finished_at": "..."}}
 ```
 
+`kind` is `remove`, `reinit`, `verify` or `migrate` (the one-off checkout
+layout migration for db-sync 2.4.0; its `result` is null).
 `result.connections.<file>.tables` lists `{table, insert, update, delete}`
 for tables where the checkout and `base` differ (geodiff's summary);
 `error` says why a connection could not be compared (no checkout yet,

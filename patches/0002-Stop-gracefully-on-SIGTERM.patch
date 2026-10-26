@@ -1,33 +1,35 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Nicklas Blidmo <nicklas.blidmo@gmail.com>
-Date: Tue, 20 Oct 2026 18:00:00 +0000
+Date: Mon, 26 Oct 2026 12:00:00 +0000
 Subject: [PATCH] Stop gracefully on SIGTERM: finish the current pull or push first
 
-The daemon had no SIGTERM handling, so the default disposition ended the
-process wherever it was. A pull that dies between "GeoPackage updated" and
+The daemon has no SIGTERM handling, so the default disposition ends the
+process wherever it is. A pull that dies between "GeoPackage updated" and
 "base schema updated" leaves a checkout that is no longer in sync with the
 database, and the next start refuses with "'base' schema is not synchronized
 with source GPKG" until --force-init re-creates everything. Any container
-stop or recreate while a project is mid-pull did this.
+stop or recreate while a project is mid-pull does this.
 
 The daemon now installs a SIGTERM handler that only sets a flag. The
 connection loops in dbsync_pull()/dbsync_push() check it before each
-connection, the main loop checks it before pull and before push, and the
-sleep between cycles polls it once a second. The process exits 0 at the
-next boundary; a pull or push that has started always completes. SIGINT
-keeps its default so ctrl+c still kills.
+connection, run_daemon() checks it at the top of the cycle and between pull
+and push, and sleep_unless_stopped() polls it once a second instead of one
+long time.sleep(). The process exits 0 at the next boundary; a pull or push
+that has started always completes. SIGINT keeps its default so ctrl+c still
+kills.
 
-Applied by dbsync-manager at image build (patches/); offered upstream.
+Rebased on 2.4.0 (run_daemon with retries) from the 2.3.0 version that
+dbsync-manager has applied at image build since 2026-10-20; offered upstream.
 ---
- dbsync.py        | 27 +++++++++++++++++++++++++++
- dbsync_daemon.py | 17 ++++++++++++++++-
- 2 files changed, 43 insertions(+), 1 deletion(-)
+  dbsync.py        | 26 ++++++++++++++++++++++++++
+  dbsync_daemon.py | 23 ++++++++++++++++++++++-
+ 2 files changed, 48 insertions(+), 1 deletion(-)
 
 diff --git a/dbsync.py b/dbsync.py
-index 30e0792..4d4169d 100644
+index 0c7db27..81cce64 100644
 --- a/dbsync.py
 +++ b/dbsync.py
-@@ -52,6 +52,26 @@ os.environ["GEODIFF_LOGGER_LEVEL"] = "4"  # 0 = nothing, 1 = errors, 2 = warning
+@@ -60,6 +60,26 @@ os.environ["GEODIFF_LOGGER_LEVEL"] = "4"  # 0 = nothing, 1 = errors, 2 = warning
  
  FORCE_INIT_MESSAGE = "Running `dbsync_deamon.py` with `--force-init` should fix the issue."
  
@@ -51,10 +53,10 @@ index 30e0792..4d4169d 100644
 +def stop_requested() -> bool:
 +    return _stop_requested
 +
+ # auth token with less validity left (in seconds) is not reused and new login is done instead
+ TOKEN_MIN_VALIDITY = 3600
  
- class DbSyncError(Exception):
-     default_print_password = "password='*****'"
-@@ -1443,6 +1463,9 @@ def dbsync_init(mc):
+@@ -1573,6 +1593,9 @@ def dbsync_init(mc):
  
  def dbsync_pull(mc):
      for conn in config.connections:
@@ -64,7 +66,7 @@ index 30e0792..4d4169d 100644
          pull(conn, mc)
  
      logging.debug("Pull done!")
-@@ -1450,6 +1473,9 @@ def dbsync_pull(mc):
+@@ -1580,6 +1603,9 @@ def dbsync_pull(mc):
  
  def dbsync_push(mc):
      for conn in config.connections:
@@ -75,7 +77,7 @@ index 30e0792..4d4169d 100644
  
      logging.debug("Push done!")
 diff --git a/dbsync_daemon.py b/dbsync_daemon.py
-index 64cc932..a6219d5 100644
+index e27c77c..39d392b 100644
 --- a/dbsync_daemon.py
 +++ b/dbsync_daemon.py
 @@ -10,6 +10,7 @@ import os
@@ -86,7 +88,7 @@ index 64cc932..a6219d5 100644
  import sys
  import time
  
-@@ -105,6 +106,10 @@ def main():
+@@ -113,6 +114,10 @@ def main():
  
      args = parser.parse_args()
  
@@ -97,37 +99,49 @@ index 64cc932..a6219d5 100644
      if args.log_file:
          log_file = pathlib.Path(args.log_file)
          setup_logger(log_file, args.log_verbosity)
-@@ -179,12 +184,20 @@ def main():
-         last_email_sent = None
+@@ -186,6 +191,14 @@ def retry_wait_time(sleep_time: int, failures: int, max_wait: int = MAX_RETRY_WA
+     return min(wait_time, max(sleep_time, max_wait))
  
-         while True:
+ 
++def sleep_unless_stopped(seconds: int) -> None:
++    """time.sleep(seconds) in one-second steps, returning early once a stop was requested."""
++    for _ in range(int(seconds)):
++        if dbsync.stop_requested():
++            return
++        time.sleep(1)
++
++
+ def run_daemon(args, sleep_time: int, max_failed_retries: int, send_notifications: bool) -> None:
+     """Keep syncing until killed. Failures (including login and init) are retried within
+     this process with exponential backoff instead of exiting, so the daemon does not
+@@ -203,6 +216,10 @@ def run_daemon(args, sleep_time: int, max_failed_retries: int, send_notification
+     last_email_sent = None
+ 
+     while True:
++        if dbsync.stop_requested():
++            logging.info("stop requested; exiting cleanly between cycles")
++            sys.exit(0)
++
+         print(datetime.datetime.now())
+         login_failed = False
+ 
+@@ -222,6 +239,10 @@ def run_daemon(args, sleep_time: int, max_failed_retries: int, send_notification
+             logging.debug("Trying to pull")
+             dbsync.dbsync_pull(mc)
+ 
 +            if dbsync.stop_requested():
-+                logging.info("stop requested; exiting cleanly between cycles")
++                logging.info("stop requested; exiting cleanly after pull")
 +                sys.exit(0)
 +
-             print(datetime.datetime.now())
- 
-             try:
-                 logging.debug("Trying to pull")
-                 dbsync.dbsync_pull(mc)
- 
-+                if dbsync.stop_requested():
-+                    logging.info("stop requested; exiting cleanly after pull")
-+                    sys.exit(0)
-+
-                 logging.debug("Trying to push")
-                 dbsync.dbsync_push(mc)
- 
-@@ -209,7 +222,11 @@ def main():
-                         last_email_sent = datetime.datetime.now()
- 
+             logging.debug("Trying to push")
+             dbsync.dbsync_push(mc)
+             started = True
+@@ -278,7 +299,7 @@ def run_daemon(args, sleep_time: int, max_failed_retries: int, send_notification
+         else:
+             wait_time = sleep_time
              logging.debug("Going to sleep")
--            time.sleep(sleep_time)
-+            # One-second steps so a stop request ends the sleep early.
-+            for _ in range(sleep_time):
-+                if dbsync.stop_requested():
-+                    break
-+                time.sleep(1)
+-        time.sleep(wait_time)
++        sleep_unless_stopped(wait_time)
  
  
  if __name__ == "__main__":

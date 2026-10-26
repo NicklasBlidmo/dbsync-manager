@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Slice 16 (brief 2026-10-21d): db-sync 2.4.0. One checkout per connection
+  is upstream (#187, our fix for #163), so patch `0001` is removed; the
+  checkout now lives at `work/<project>-<modified schema>` and holds only
+  the synced GeoPackage (#128). `supervisor/layout.py` is the one place
+  that knows the layout. Upgrading an installation requires
+  `migrate_checkouts` once (Projects page or `manage.py`): projects in
+  the old layout are not started until the `migrate` operation has
+  stopped the daemon, removed the old tree and let db-sync download the
+  new checkout, one project at a time. Patch `0002` (graceful stop) is
+  rebased on 2.4.0's retrying main loop; the generated config sets
+  `max_failed_retries: 1` so a failed login or init still reaches the
+  supervisor's exit classification. db-sync's `.mergin_auth.json` under
+  the work dir is documented as a secret.
 - Slice 15 (brief 2026-10-21): the check compares the content of base
   and modified per table (one statement with a FULL OUTER JOIN on the
   GeoPackage key, IS DISTINCT FROM per column, EWKB bytes for

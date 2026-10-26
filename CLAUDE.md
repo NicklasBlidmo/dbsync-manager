@@ -47,8 +47,16 @@ Invariants learned the hard way:
   second daemon for a project whose pidfile process is alive.
 - db-sync's config parser (dynaconf) rewrites values that start with `@`.
   The config renderer refuses such secrets; do not "fix" that by quoting.
-- db-sync 2.3.0 logs in with username and password only; API token accounts
+- db-sync 2.4.0 logs in with username and password only; API token accounts
   render as `blocked` with the reason, not as a crash loop.
+- db-sync 2.4.0 retries a failed login or init inside the process (about
+  an hour with its default `max_failed_retries: 10`). The generated config
+  sets it to 1 so the exit reaches `exits.classify_exit`; do not raise it.
+- `supervisor/layout.py` is the only place that knows where a checkout is
+  (`work/<project>-<modified schema>`, db-sync 2.4.0). A project whose
+  2.3.0 tree (`work/<project>/`) still exists is not started until the
+  `migrate` operation has run (slice 16); `work/.mergin_auth.json` is
+  db-sync's session token, a secret like the config.
 - Everything the supervisor loads at the top of a tick is a snapshot. A
   step that changes a project's registry row (mark_removed, reset) ends
   that project's participation in the current tick, and _start re-reads
@@ -76,9 +84,11 @@ Invariants learned the hard way:
   120 s and `docker-compose.yml` has `stop_grace_period: 150s`. A pull
   killed between "GeoPackage updated" and "base schema updated" leaves a
   checkout only Re-init repairs (incident 2026-10-20b). `patches/` holds
-  the upstream 2.3.0 sources and the `*.patched` results;
+  the upstream 2.4.0 sources and the `*.patched` results;
   `supervisor/tests_patches.py` applies the patches as the Dockerfile does
-  and fails if they drift.
+  and fails if they drift. Upgrading db-sync means: diff the upstream
+  tags, copy the new sources to `patches/upstream/`, regenerate the patch
+  (`*.patched` too) and run that test before anything else.
 - The JSON API (`manager/api/`) is versioned at `/api/v1/` and read-only
   except verify; within v1 fields are added, never renamed or removed
   (`docs/api.md`). Pages and the API read the same structures from

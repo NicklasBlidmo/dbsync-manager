@@ -6,18 +6,22 @@ Copyright (C) 2020 Lutra Consulting
 License: MIT
 """
 
+import datetime
 import getpass
+import glob
 import json
 import os
 import shutil
 import string
 import subprocess
 import tempfile
+import typing
 import random
 import uuid
 import re
 import pathlib
 import logging
+import typing
 
 import psycopg2
 import psycopg2.extensions
@@ -35,6 +39,10 @@ from mergin import (
     ClientError,
     InvalidProject,
 )
+from mergin.client import (
+    decode_token_data,
+    TokenError,
+)
 from version import (
     __version__,
 )
@@ -51,6 +59,9 @@ from config import (
 os.environ["GEODIFF_LOGGER_LEVEL"] = "4"  # 0 = nothing, 1 = errors, 2 = warning, 3 = info, 4 = debug
 
 FORCE_INIT_MESSAGE = "Running `dbsync_deamon.py` with `--force-init` should fix the issue."
+
+# auth token with less validity left (in seconds) is not reused and new login is done instead
+TOKEN_MIN_VALIDITY = 3600
 
 
 class DbSyncError(Exception):
@@ -495,8 +506,10 @@ def _get_project_version(work_path) -> str:
     return mp.version()
 
 
-def _get_project_id(mp: MerginProject):
+def _get_project_id(mp: typing.Union[MerginProject, str]):
     """Returns the project ID"""
+    if isinstance(mp, str):
+        mp = _get_mergin_project(mp)
     try:
         project_id = uuid.UUID(mp.project_id())
     except (
@@ -523,7 +536,7 @@ def _set_db_project_comment(
         "version": version,
     }
     if project_id:
-        comment["project_id"] = project_id
+        comment["project_id"] = str(project_id)
     if error:
         comment["error"] = error
     cur = conn.cursor()
@@ -535,7 +548,7 @@ def _set_db_project_comment(
     conn.commit()
 
 
-def _get_db_project_comment(conn, schema):
+def _get_db_project_comment(conn, schema) -> typing.Optional[typing.Dict]:
     """Get Mergin Maps project name and its current version in db schema"""
     cur = conn.cursor()
     schema = _add_quotes_to_schema_name(schema)
@@ -554,6 +567,11 @@ def _get_db_project_comment(conn, schema):
     return comment
 
 
+def _download_project(mc, conn_cfg, work_dir, version=None):
+    """Download only the sync file of the Mergin Maps project (sparse checkout)"""
+    mc.download_project(conn_cfg.mergin_project, work_dir, version, include=[glob.escape(conn_cfg.sync_file)])
+
+
 def _redownload_project(conn_cfg, mc, work_dir, db_proj_info):
     logging.debug(f"Removing local working directory {work_dir}")
     shutil.rmtree(work_dir)
@@ -562,11 +580,7 @@ def _redownload_project(conn_cfg, mc, work_dir, db_proj_info):
         f"to {work_dir}"
     )
     try:
-        mc.download_project(
-            conn_cfg.mergin_project,
-            work_dir,
-            db_proj_info["version"],
-        )
+        _download_project(mc, conn_cfg, work_dir, db_proj_info["version"])
     except ClientError as e:
         raise DbSyncError("Mergin Maps client error: " + str(e))
 
@@ -593,16 +607,115 @@ def _validate_local_project_id(
         )
 
 
+def _token_expires_soon(expire: typing.Optional[datetime.datetime]) -> bool:
+    if expire is None:
+        return True
+    delta = expire - datetime.datetime.now(datetime.timezone.utc)
+    return delta.total_seconds() < TOKEN_MIN_VALIDITY
+
+
+class AuthTokenStore:
+    """Stores Mergin Maps auth token in the working directory, so it can be reused
+    when DB sync is restarted instead of new login"""
+
+    def __init__(self, working_dir: str, url: str, username: str):
+        self.path = pathlib.Path(working_dir) / ".mergin_auth.json"
+        self.url = url
+        self.username = username
+
+    @classmethod
+    def from_config(cls) -> "AuthTokenStore":
+        return cls(config.working_dir, config.mergin.url, config.mergin.username)
+
+    def load(self) -> typing.Optional[str]:
+        """Returns stored token if it was issued for this server and user and it is not about to expire"""
+        try:
+            with open(self.path) as f:
+                data = json.load(f)
+            if data["url"] != self.url or data["username"] != self.username:
+                return None
+            token = data["token"]
+            expire = datetime.datetime.fromisoformat(decode_token_data(token)["expire"])
+        except FileNotFoundError:
+            return None
+        except (OSError, ValueError, KeyError, TypeError, TokenError) as e:
+            logging.warning(f"Unable to read stored Mergin Maps auth token: {e}")
+            return None
+        
+        if _token_expires_soon(expire):
+            return None
+        return token
+
+    def save(self, mc: MerginClient) -> None:
+        """Stores auth token of the client"""
+        token = (mc._auth_session or {}).get("token")
+        if not token:
+            return
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            # readable only by the owner (on POSIX systems)
+            with open(os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
+                json.dump({"url": self.url, "username": self.username, "token": token}, f)
+        except OSError as e:
+            logging.warning(f"Unable to store Mergin Maps auth token: {e}")
+
+    def remove(self) -> None:
+        self.path.unlink(missing_ok=True)
+
+
+def auth_token_expires_soon(mc: MerginClient) -> bool:
+    return _token_expires_soon((mc._auth_session or {}).get("expire"))
+
+
+def auth_token_rejected(mc: MerginClient) -> bool:
+    """Checks whether the server rejects auth token of the client although it has not expired yet.
+    Other errors (e.g. server unavailable) are ignored."""
+    try:
+        mc.user_info()
+    except ClientError as e:
+        return e.http_error == 401
+    except Exception:
+        pass
+    return False
+
+
+def _create_mergin_client_from_stored_token() -> typing.Optional[MerginClient]:
+    """Creates MerginClient using stored auth token, returns None if there is no valid stored token"""
+    token_store = AuthTokenStore.from_config()
+    token = token_store.load()
+    if not token:
+        return None
+
+    mc = MerginClient(
+        config.mergin.url,
+        auth_token=token,
+        login=config.mergin.username,
+        password=config.mergin.password,
+        plugin_version=f"DB-sync/{__version__}",
+    )
+    if auth_token_rejected(mc):
+        logging.debug("Stored Mergin Maps auth token was rejected by the server")
+        token_store.remove()
+        return None
+
+    logging.debug("Using stored Mergin Maps auth token")
+    return mc
+
+
 def create_mergin_client():
-    """Create instance of MerginClient"""
+    """Create instance of MerginClient, reusing stored auth token if possible"""
     _check_has_password()
     try:
-        return MerginClient(
-            config.mergin.url,
-            login=config.mergin.username,
-            password=config.mergin.password,
-            plugin_version=f"DB-sync/{__version__}",
-        )
+        mc = _create_mergin_client_from_stored_token()
+        if mc is None:
+            mc = MerginClient(
+                config.mergin.url,
+                login=config.mergin.username,
+                password=config.mergin.password,
+                plugin_version=f"DB-sync/{__version__}",
+            )
+            AuthTokenStore.from_config().save(mc)
+        return mc
     except LoginError as e:
         # this could be auth failure, but could be also server problem (e.g. worker crash)
         raise DbSyncError(
@@ -670,6 +783,22 @@ def revert_local_changes(
     return leftovers
 
 
+def _get_work_dir(conn_cfg):
+    """Return the local working directory (project checkout) for a connection.
+
+    Each connection gets its own checkout of the Mergin Maps project in
+    ``<working_dir>/<project name>-<modified schema>``; the modified schema is
+    unique per connection. Previously all connections to the same project shared
+    ``<working_dir>/<project name>``: the first connection to see a new server
+    version pulled it - updating *every* GeoPackage in the checkout - but only
+    computed and applied the changeset for its own sync file. The remaining
+    connections then saw local_version == server_version and did nothing, so
+    their changes never reached the database and no error was logged (#163).
+    """
+    project_name = conn_cfg.mergin_project.split("/")[1]
+    return os.path.join(config.working_dir, f"{project_name}-{conn_cfg.modified}")
+
+
 def pull(conn_cfg, mc):
     """Downloads any changes from Mergin Maps and applies them to the database"""
 
@@ -678,10 +807,7 @@ def pull(conn_cfg, mc):
     include_tables = get_include_tables(conn_cfg)
 
     project_name = conn_cfg.mergin_project.split("/")[1]
-    work_dir = os.path.join(
-        config.working_dir,
-        project_name,
-    )
+    work_dir = _get_work_dir(conn_cfg)
     gpkg_full_path = os.path.join(
         work_dir,
         conn_cfg.sync_file,
@@ -821,12 +947,12 @@ def pull(conn_cfg, mc):
 
     os.remove(gpkg_basefile_old)
     conn = psycopg2.connect(conn_cfg.conn_info)
-    version = _get_project_version(work_dir)
     _set_db_project_comment(
         conn,
         conn_cfg.base,
         conn_cfg.mergin_project,
-        version,
+        version=_get_project_version(work_dir),
+        project_id=_get_project_id(work_dir),
     )
 
 
@@ -839,10 +965,7 @@ def status(conn_cfg, mc):
 
     project_name = conn_cfg.mergin_project.split("/")[1]
 
-    work_dir = os.path.join(
-        config.working_dir,
-        project_name,
-    )
+    work_dir = _get_work_dir(conn_cfg)
     gpkg_full_path = os.path.join(
         work_dir,
         conn_cfg.sync_file,
@@ -877,7 +1000,11 @@ def status(conn_cfg, mc):
         server_info,
     )
 
-    status_push = mp.get_push_changes()
+    try:
+        status_pull, status_push, _ = mc.project_status(work_dir)
+    except ClientError as e:
+        raise DbSyncError("Mergin Maps client error: " + str(e))
+
     if status_push["added"] or status_push["updated"] or status_push["removed"]:
         raise DbSyncError("Pending changes in the local directory - that should never happen! " + str(status_push))
 
@@ -886,7 +1013,6 @@ def status(conn_cfg, mc):
     logging.debug("")
 
     logging.debug("Server is at version " + server_info["version"])
-    status_pull = mp.get_pull_changes(server_info["files"], server_info["version"])
     if status_pull["added"] or status_pull["updated"] or status_pull["removed"]:
         logging.debug("There are pending changes on server:")
         _print_mergin_changes(status_pull)
@@ -951,10 +1077,7 @@ def push(conn_cfg, mc):
     if os.path.exists(tmp_changeset_file):
         os.remove(tmp_changeset_file)
 
-    work_dir = os.path.join(
-        config.working_dir,
-        project_name,
-    )
+    work_dir = _get_work_dir(conn_cfg)
     gpkg_full_path = os.path.join(
         work_dir,
         conn_cfg.sync_file,
@@ -1043,7 +1166,13 @@ def push(conn_cfg, mc):
     _geodiff_apply_changeset(
         conn_cfg.driver, conn_cfg.conn_info, conn_cfg.base, tmp_changeset_file, ignored_tables, include_tables
     )
-    _set_db_project_comment(conn, conn_cfg.base, conn_cfg.mergin_project, version)
+    _set_db_project_comment(
+        conn,
+        conn_cfg.base,
+        conn_cfg.mergin_project,
+        version,
+        project_id=_get_project_id(work_dir),
+    )
 
 
 def init(
@@ -1056,8 +1185,6 @@ def init(
     logging.debug(f"Processing Mergin Maps project '{conn_cfg.mergin_project}'")
     ignored_tables = get_ignored_tables(conn_cfg)
     include_tables = get_include_tables(conn_cfg)
-
-    project_name = conn_cfg.mergin_project.split("/")[1]
 
     # let's start with various environment checks to make sure
     # the environment is set up correctly before doing any work
@@ -1081,10 +1208,7 @@ def init(
         conn_cfg.modified,
     )
 
-    work_dir = os.path.join(
-        config.working_dir,
-        project_name,
-    )
+    work_dir = _get_work_dir(conn_cfg)
     gpkg_full_path = os.path.join(
         work_dir,
         conn_cfg.sync_file,
@@ -1124,18 +1248,26 @@ def init(
                 f"Downloading version {db_proj_info['version']} of Mergin Maps project {conn_cfg.mergin_project} "
                 f"to {work_dir}"
             )
-            mc.download_project(conn_cfg.mergin_project, work_dir, db_proj_info["version"])
+            # project ID is missing in comments created by older versions of db-sync - skip the check in that case,
+            # it will be stored in the comment by next pull/push
+            db_project_id_str = db_proj_info.get("project_id", None)
+            if db_project_id_str:
+                project_info = mc.project_info(conn_cfg.mergin_project)
+                if uuid.UUID(db_project_id_str) != uuid.UUID(project_info["id"]):
+                    raise DbSyncError(
+                        "Mergin Maps project ID doesn't match Mergin Maps project ID stored in the database. "
+                        "Did you change configuration from one Mergin Maps project to another? "
+                        f"You either need to remove schema `{conn_cfg.base}` from Database or use `--force-init` option. "
+                        f"{FORCE_INIT_MESSAGE}"
+                    )
+            _download_project(mc, conn_cfg, work_dir, db_proj_info["version"])
         else:
             # Get project ID from DB if available
             try:
                 local_version = _get_project_version(work_dir)
                 logging.debug(f"Working directory {work_dir} already exists, with project version {local_version}")
                 # Compare local and database project version
-                db_project_id_str = getattr(
-                    db_proj_info,
-                    "project_id",
-                    None,
-                )
+                db_project_id_str = db_proj_info.get("project_id", None)
                 db_project_id = uuid.UUID(db_project_id_str) if db_project_id_str else None
                 mp = _get_mergin_project(work_dir)
                 local_project_id = _get_project_id(mp)
@@ -1154,7 +1286,7 @@ def init(
     else:
         if not os.path.exists(work_dir):
             logging.debug("Downloading latest Mergin Maps project " + conn_cfg.mergin_project + " to " + work_dir)
-            mc.download_project(conn_cfg.mergin_project, work_dir)
+            _download_project(mc, conn_cfg, work_dir)
         else:
             local_version = _get_project_version(work_dir)
             logging.debug(f"Working directory {work_dir} already exists, with project version {local_version}")
@@ -1298,6 +1430,7 @@ def init(
             conn_cfg.base,
             conn_cfg.mergin_project,
             local_version,
+            project_id=_get_project_id(work_dir),
         )
     else:
         if not modified_schema_exists:
@@ -1417,12 +1550,12 @@ def init(
         mc.push_project(work_dir)
 
         # mark project version into db schema
-        version = _get_project_version(work_dir)
         _set_db_project_comment(
             conn,
             conn_cfg.base,
             conn_cfg.mergin_project,
-            version,
+            version=_get_project_version(work_dir),
+            project_id=_get_project_id(work_dir),
         )
 
 
@@ -1468,15 +1601,15 @@ def clean(conn_cfg, mc):
         except FileNotFoundError as e:
             raise DbSyncError("Unable to remove working directory: " + str(e))
 
+        # keep the auth token, so it can be reused after restart (e.g. when --force-init is kept in container command)
+        AuthTokenStore.from_config().save(mc)
+
     if from_db:
         temp_folder = pathlib.Path(config.working_dir).parent / "project_to_delete_sync_file"
         try:
             # to remove sync file, download project to created directory, drop file and push changes back
             file = temp_folder / conn_cfg.sync_file
-            mc.download_project(
-                conn_cfg.mergin_project,
-                str(temp_folder),
-            )
+            _download_project(mc, conn_cfg, str(temp_folder))
             if file.exists():
                 file.unlink()
             mc.push_project(str(temp_folder))

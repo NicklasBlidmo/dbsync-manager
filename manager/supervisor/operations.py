@@ -18,6 +18,9 @@ can act on.
     reinit:  block → stop_child → snapshot_pending → pre_remove_hook
              → drop_schemas → delete_workdir → reset
     verify:  verify (read-only; the daemon keeps running, slice 15)
+    migrate: wait_turn → block → stop_child → remove_old_checkout → redownload
+             (one-off, db-sync 2.4.0 checkout layout, slice 16; one project
+             at a time, nothing destructive beyond the old checkout tree)
 
 Cancel is offered only before `drop_schemas` has started; after that the
 only way forward is retry.
@@ -30,6 +33,7 @@ from registry.models import Operation
 REMOVE_STEPS = ["block", "stop_child", "pre_remove_hook", "drop_schemas", "delete_workdir", "mark_removed"]
 REINIT_STEPS = ["block", "stop_child", "snapshot_pending", "pre_remove_hook", "drop_schemas", "delete_workdir", "reset"]
 VERIFY_STEPS = ["verify"]
+MIGRATE_STEPS = ["wait_turn", "block", "stop_child", "remove_old_checkout", "redownload"]
 FIRST_DESTRUCTIVE_STEP = "drop_schemas"
 
 class Wait:
@@ -55,6 +59,8 @@ def steps_for(operation) -> list:
         return REINIT_STEPS
     if operation.kind == Operation.Kind.VERIFY:
         return VERIFY_STEPS
+    if operation.kind == Operation.Kind.MIGRATE:
+        return MIGRATE_STEPS
     return REMOVE_STEPS
 
 

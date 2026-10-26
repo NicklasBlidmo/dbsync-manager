@@ -6,7 +6,9 @@ at INFO) and turns lines into `sync_run` rows and events. This is the only
 place the log is interpreted, and nothing here decides state or raises an
 alert: the consistency check does that from the sources of truth.
 
-Rules, from what db-sync 2.3.0 and mergin-client 0.13.3 actually log:
+Rules, from what db-sync 2.3.0 and mergin-client 0.13.3 actually log
+(db-sync 2.4.0 / mergin-client 0.15.0 keep these lines and add the retry
+and auth-token messages, which fall through to the level rules):
 
 | line                                              | meaning                                  | action                           |
 |---------------------------------------------------|------------------------------------------|----------------------------------|

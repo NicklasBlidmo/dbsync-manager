@@ -5,10 +5,10 @@ The registry is the source of truth and the file is a derived artefact:
 regenerated on every start, never read back, mode 600 because it holds the
 Mergin password and the database password in clear (§4).
 
-Format as db-sync 2.3.0's config.py validates it: `mergin.{url,username,
+Format as db-sync 2.4.0's config.py validates it: `mergin.{url,username,
 password}`, `init_from`, `working_dir`, `connections[].{driver,conn_info,
 modified,base,mergin_project,sync_file,skip_tables?,include_tables?}` and
-`daemon.sleep_time`.
+`daemon.{sleep_time,max_failed_retries}`.
 """
 
 import os
@@ -19,14 +19,19 @@ import yaml
 
 from registry.models import MerginAccount
 
+from .layout import WORKING_SUBDIR  # noqa: F401 - re-exported; layout.py owns the checkout paths
+
 # db-sync's config parser (dynaconf) treats a value starting with "@" as a
 # directive: "@int 5" becomes 5, "@format {env[HOME]}" becomes the home
 # directory. A password beginning with "@" would be silently mangled.
 DIRECTIVE_PREFIX = "@"
 
-# db-sync's working_dir lives under the project's work dir; the checkout of a
-# connection ends up at <work_dir>/work/<project name>/<modified schema>.
-WORKING_SUBDIR = "work"
+# db-sync 2.4.0 retries a failed login or init inside the process with its
+# own backoff and exits only after `max_failed_retries` consecutive failures
+# (upstream default 10: about an hour). The supervisor owns the restart
+# policy and classifies exits (exits.py), so the daemon gets one retry and
+# then exits; 0 would mean never. Do not raise this (slice 16).
+MAX_FAILED_RETRIES = 1
 
 
 class ConfigRenderError(Exception):
@@ -52,7 +57,7 @@ def render_config(project, connections, account, database, work_dir) -> str:
         raise ConfigRenderError("project has no connections (GeoPackages) to sync")
     if account.kind != MerginAccount.Kind.PASSWORD:
         raise ConfigRenderError(
-            "db-sync 2.3.0 logs in to Mergin Maps with username and password only; "
+            "db-sync 2.4.0 logs in to Mergin Maps with username and password only; "
             f"account '{account.name}' is an API token account"
         )
     if "/" not in project.mergin_project:
@@ -89,7 +94,7 @@ def render_config(project, connections, account, database, work_dir) -> str:
         "init_from": str(project.init_from),
         "working_dir": str(Path(work_dir) / WORKING_SUBDIR),
         "connections": entries,
-        "daemon": {"sleep_time": int(project.sleep_time)},
+        "daemon": {"sleep_time": int(project.sleep_time), "max_failed_retries": MAX_FAILED_RETRIES},
     }
     return yaml.safe_dump(document, default_flow_style=False, allow_unicode=True, sort_keys=False)
 

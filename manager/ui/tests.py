@@ -3,14 +3,19 @@ UI tests (tagged `db`: they need users, groups and rows). Run with the
 compose profile `test`.
 """
 
+import tempfile
+from io import StringIO
+from pathlib import Path
 from urllib.parse import urlencode
 
 from django.contrib.auth.models import Group, User
-from django.test import TestCase, tag
+from django.core.management import call_command
+from django.test import TestCase, override_settings, tag
 from django.urls import reverse
 
-from registry.models import Database, Event, MerginAccount, SyncConnection, SyncProject, SyncStatus
+from registry.models import Database, Event, MerginAccount, Operation, SyncConnection, SyncProject, SyncStatus
 from registry.permissions import ensure_groups
+from supervisor import layout
 
 
 @tag("db")
@@ -526,6 +531,42 @@ class BulkActionTests(TestCase):
         self.assertContains(self.client.get(reverse("resume_all")), "Nothing to resume")
         self.client.login(username="v4", password="pw")
         self.assertEqual(self.client.get(reverse("pause_all")).status_code, 403)
+
+    def test_migrate_checkouts_notice_page_and_command(self):
+        # Slice 16, C10: a project with the 2.3.0 checkout tree.
+        a = self.projects["ak/a"]
+        self.client.login(username="op4", password="pw")
+        self.assertNotContains(self.client.get(reverse("home")), "Checkout migration pending")
+        with tempfile.TemporaryDirectory() as tmp, override_settings(DBSYNC_DATA_DIR=Path(tmp)):
+            (layout.legacy_checkout_tree(a.work_dir, a.mergin_project) / "a_s_x").mkdir(parents=True)
+            home = self.client.get(reverse("home"))
+            self.assertContains(home, "Checkout migration pending")
+            self.assertContains(home, "1 project")
+            self.assertContains(home, "still has the old layout")
+            self.assertContains(home, reverse("migrate_checkouts"))
+            page = self.client.get(reverse("migrate_checkouts"))
+            self.assertContains(page, "1 project will be migrated")
+            self.assertContains(page, "Run Verify on every project first")
+            out = StringIO()
+            call_command("migrate_checkouts", "--list", stdout=out)
+            self.assertIn("ak/a", out.getvalue())
+            self.assertFalse(Operation.objects.exists())            # --list creates nothing
+            response = self.client.post(reverse("migrate_checkouts"))
+            self.assertRedirects(response, reverse("home"))
+            op = Operation.objects.get(project=a)
+            self.assertEqual((op.kind, op.status, op.requested_by), ("migrate", "pending", self.operator))
+            self.assertTrue(Event.objects.filter(project=a, message__contains="checkout layout migration").exists())
+            # While that operation is open the page lists the project as not touched.
+            self.assertContains(self.client.get(reverse("migrate_checkouts")), "Not touched: ak/a")
+            out = StringIO()
+            call_command("migrate_checkouts", stdout=out)
+            self.assertIn("skipped ak/a", out.getvalue())
+            # A viewer sees the notice but no button, and cannot open the page.
+            self.client.login(username="v4", password="pw")
+            home = self.client.get(reverse("home"))
+            self.assertContains(home, "Checkout migration pending")
+            self.assertNotContains(home, reverse("migrate_checkouts"))
+            self.assertEqual(self.client.get(reverse("migrate_checkouts")).status_code, 403)
 
     def test_home_shows_the_buttons_to_operators_only(self):
         self.client.login(username="op4", password="pw")

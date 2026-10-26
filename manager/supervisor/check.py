@@ -8,7 +8,8 @@ sets the new row, the per-connection health and the active conditions.
 `run_project_check()` ties them together for one project.
 
 What the sources mean and why the rules look like this is spelled out in
-§6; the short version, verified against db-sync 2.3.0: the checkout is
+§6; the short version, verified against db-sync 2.3.0 (unchanged in 2.4.0,
+which downloads only the sync file into the checkout): the checkout is
 pulled first, base then modified are applied, and the base schema comment
 is written last, so `db_version < local_version` that persists is an
 interrupted pull, GeoPackage vs base catches base falling behind, and

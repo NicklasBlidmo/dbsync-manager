@@ -2,6 +2,13 @@
 {% block title %}Projects · dbsync-manager{% endblock %}
 {% block content %}
 <h1 class="page-title">Projects</h1>
+{% if migration_pending %}
+<div class="notice warn"><strong>Checkout migration pending.</strong> This image runs db-sync 2.4.0, which keeps one
+  checkout per connection in a new layout. {{ migration_pending|length }} project{{ migration_pending|length|pluralize }}
+  still {{ migration_pending|length|pluralize:"has,have" }} the old layout and {{ migration_pending|length|pluralize:"is,are" }}
+  not started until migrated: {% for p in migration_pending %}<a href="{% url 'project' p.pk %}">{{ p.mergin_project }}</a>{% if not forloop.last %}, {% endif %}{% endfor %}.
+  Run Verify on each first.{% if can_operate %} <a class="button" href="{% url 'migrate_checkouts' %}">Migrate checkouts</a>{% endif %}</div>
+{% endif %}
 <form class="filters" method="get" hx-get="{% url 'projects_table' %}" hx-target="#projects" hx-trigger="change">
   <label>Desired
     <select name="desired_state"><option value="">all</option>

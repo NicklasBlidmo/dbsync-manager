@@ -44,13 +44,14 @@ def fixtures(*, kind=MerginAccount.Kind.PASSWORD, mergin_secret="pw", db_passwor
 
 @override_settings(DBSYNC_MANAGER_SECRET_KEY=KEY)
 class RenderConfigTests(SimpleTestCase):
-    def test_renders_dbsync_2_3_layout(self):
+    def test_renders_dbsync_2_4_layout(self):
         project, conns, account, database = fixtures()
         doc = yaml.safe_load(render_config(project, conns, account, database, "/data/projects/42"))
         self.assertEqual(doc["mergin"], {"url": "https://app.merginmaps.com", "username": "svc", "password": "pw"})
         self.assertEqual(doc["init_from"], "gpkg")
         self.assertEqual(doc["working_dir"], str(Path("/data/projects/42") / WORKING_SUBDIR))
-        self.assertEqual(doc["daemon"], {"sleep_time": 15})
+        # max_failed_retries 1: the supervisor, not db-sync, owns retries (slice 16).
+        self.assertEqual(doc["daemon"], {"sleep_time": 15, "max_failed_retries": 1})
         self.assertEqual(len(doc["connections"]), 2)
         first = doc["connections"][0]
         self.assertEqual(first["driver"], "postgres")

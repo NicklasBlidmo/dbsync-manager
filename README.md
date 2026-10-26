@@ -157,6 +157,25 @@ changes are pending, then re-apply the views and grants. Nothing outside
 the sync schemas is touched. `database_missing_postgis` needs the DBA,
 then Pause and Resume.
 
+**Upgrading an installation to db-sync 2.4.0 (checkout layout).** The
+image from slice 16 on runs db-sync 2.4.0, which keeps one checkout per
+connection at `work/<project>-<modified schema>` holding only the synced
+GeoPackage (upstream #187 and #128; before, patch `0001` used
+`work/<project>/<modified schema>` with the whole project). After `pull`,
+`build` and `up -d` the Projects page shows "Checkout migration pending"
+and the projects with the old layout are not started. Run **Verify** on
+every project first (a project that fails needs Re-init instead), then
+**Migrate checkouts** on the Projects page or
+`docker compose exec manager python manage.py migrate_checkouts`. The
+supervisor takes one project at a time: stop between cycles, remove the
+old tree, start, and wait until db-sync has downloaded one GeoPackage per
+connection at the database's version and compared it with `base`; the
+project's events say how long it took. db-sync also writes
+`work/.mergin_auth.json` (mode 0600, the Mergin session token, reused
+across restarts) and retries a failed login or init once inside the
+process before it exits (`max_failed_retries: 1` in the generated
+config; the supervisor owns the restart policy).
+
 **Mergin connectivity.** A daemon that exits because the Mergin server is
 unreachable is restarted every minute and feeds the same
 `mergin_unreachable` condition as the check (one mail per server after
@@ -352,8 +371,13 @@ docker compose --profile test run --rm test
 /data/projects/<id>/dbsync.stderr.log  everything db-sync writes to stderr, rotated
 /data/projects/<id>/dbsync.pid         pid + config path, used to re-attach
 /data/projects/<id>/tmp/               TMPDIR of the daemon and hooks, emptied on start
-/data/projects/<id>/work/<project>/<modified schema>/   the checkout (#163 patch)
+/data/projects/<id>/work/<project>-<modified schema>/   the checkout of one connection: the synced
+                                       GeoPackage and .mergin/ (db-sync 2.4.0)
+/data/projects/<id>/work/.mergin_auth.json   db-sync's Mergin session token, mode 0600 (a secret)
+/data/projects/<id>/work/.layout-v2    marker: the 2.3.0 checkout tree is gone (migrate_checkouts)
 ```
+
+`supervisor/layout.py` is the one place in the code that knows this layout.
 
 ## Project history
 
