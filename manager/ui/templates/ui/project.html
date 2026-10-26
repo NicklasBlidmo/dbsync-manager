@@ -96,7 +96,7 @@
 </details>
 
 <details class="section">
-  <summary class="section-title">Conflicts <span class="muted">· {{ conflicts|length }} rebase conflict file{{ conflicts|length|pluralize }}{% if conflicts %} · latest {{ conflicts.0.at|date:"Y-m-d H:i:s" }}{% endif %} · two-way: both sides changed the same value, the server's stands, the database's is here</span></summary>
+  <summary class="section-title">Conflicts <span class="muted">· {{ conflicts|length }} rebase conflict file{{ conflicts|length|pluralize }}{% if conflicts %} · latest {{ conflicts.0.at|date:"Y-m-d H:i:s" }}{% endif %} · two-way: the field and the database changed the same value; the database's stands on both sides, the field's is here</span></summary>
   <table class="table">
     <thead><tr><th>When</th><th>GeoPackage</th><th>Layer</th><th class="num">Conflicts</th><th>Rows (fid)</th>{% if can_operate %}<th></th>{% endif %}</tr></thead>
     <tbody>
@@ -106,13 +106,13 @@
         <td class="muted nowrap">{{ entry.at|date:"Y-m-d H:i:s" }}</td>
         <td>{{ entry.connection }}</td>
         <td>{{ table }}</td>
-        <td class="num">{{ info.count }}{% if info.deleted_on_server %} <span class="muted">({{ info.deleted_on_server }} deleted on the server)</span>{% endif %}</td>
+        <td class="num">{{ info.count }}{% if info.deleted_in_field %} <span class="muted">({{ info.deleted_in_field }} database update{{ info.deleted_in_field|pluralize }} of row{{ info.deleted_in_field|pluralize }} deleted in the field)</span>{% endif %}</td>
         <td class="muted">{{ info.fids|slice:":12"|join:", " }}{% if info.fids|length > 12 %} …{% endif %}</td>
         {% if can_operate %}<td>{% if forloop.first %}<a href="{% url 'project_conflict_file' project.pk entry.name %}">download</a>{% endif %}</td>{% endif %}
       </tr>
       {% endfor %}
     {% empty %}
-      <tr><td colspan="{% if can_operate %}6{% else %}5{% endif %}" class="muted">No rebase conflicts recorded. In a one-way project a rebase is an error (nothing may write modified); in a two-way project a conflict means the field and the database changed the same value between two cycles.</td></tr>
+      <tr><td colspan="{% if can_operate %}6{% else %}5{% endif %}" class="muted">No rebase conflicts recorded. In a one-way project a rebase is an error (nothing may write modified); in a two-way project a conflict means the field and the database changed the same value between two cycles: the database wins. A field update of a row the database deleted leaves no file; it is a warning event in Events.</td></tr>
     {% endfor %}
     </tbody>
   </table>

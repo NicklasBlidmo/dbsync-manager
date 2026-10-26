@@ -122,9 +122,9 @@ Field notes:
   saved conflict file (ISO or null) and `count_30d`, the number of files
   from the last 30 days. A conflict file is written when both the field
   and the database changed the same value of the same row between two
-  cycles of a two-way project; the server's value stands and the
-  database's is in the file. `GET /api/v1/projects/<id>/conflicts/`
-  lists them.
+  cycles of a two-way project; the database's value stands on both
+  sides and the field's overwritten value is in the file.
+  `GET /api/v1/projects/<id>/conflicts/` lists them.
 
 ## `GET /api/v1/projects/<id>/`
 
@@ -166,17 +166,26 @@ are kept):
   "conflicts": [
     {"name": "20261027T101502-1-punkter.gpkg.json", "at": "2026-10-27T10:15:02+01:00",
      "connection": "1-punkter.gpkg", "count": 2,
-     "tables": {"punkter": {"count": 2, "fids": ["17", "41"], "deleted_on_server": 0}}}
+     "tables": {"punkter": {"count": 2, "fids": ["17", "41"], "fids_deleted": [], "deleted_in_field": 0,
+                            "deleted_on_server": 0}}}
   ]
 }
 ```
 
+`deleted_in_field` counts the entries that are a database update of a
+row the field deleted (dropped with the row), `fids_deleted` lists them;
+`deleted_on_server` is the same number under the name the first day of
+slice 17 used (kept, v1 never removes a field).
+
 `GET /api/v1/projects/<id>/conflicts/<name>/` returns one file as
 geodiff wrote it: `{"name": ..., "geodiff": [{"table", "type":
 "conflict", "fid", "changes": [{"column": <position>, "base", "old",
-"new"}]}]}` where `old` is the server's value (which stands) and `new`
-the database's (dropped); a change without `old` is a database update of
-a row the server deleted.
+"new"}]}]}`. The names are geodiff's: `old` is the field's value, the
+one that was overwritten, and `new` the database's, which stands on both
+sides. A change without `old` is a database update of a row the field
+deleted. The remaining case, a field update of a row the database
+deleted, is in no file: it is a `warning` event ("field update lost: ...")
+in the project's events, written from db-sync's log (patch `0003`).
 
 ## `POST /api/v1/projects/<id>/verify/`
 

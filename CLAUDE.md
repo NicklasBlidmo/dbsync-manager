@@ -52,13 +52,21 @@ Invariants learned the hard way:
 - db-sync 2.4.0 retries a failed login or init inside the process (about
   an hour with its default `max_failed_retries: 10`). The generated config
   sets it to 1 so the exit reaches `exits.classify_exit`; do not raise it.
+- In a two-way rebase the database syncs last and wins: the field's
+  value in a same-column conflict is overwritten on both sides, and a
+  delete wins over an update either way (two-way test 2026-10-26e). The
+  README's "Two-way sync" rules are from that test; do not "correct"
+  them from geodiff's `old`/`new` naming, which is the other way round.
 - geodiff's rebase conflict file (`<TMPDIR>/<project name>-dbsync-pull-
-  conflicts`, written only when a two-way rebase dropped database values)
-  is the only record of those values. The daemon's TMPDIR is the
-  manager's, so `supervisor/conflicts.py` moves the file out every tick
-  and before a start (`private_tmpdir` empties the directory). One file
-  name per project, not per connection: a second rebase in the same
-  cycle overwrites the first (slice 17).
+  conflicts`, written only when a two-way rebase overwrote a field value
+  or dropped a database update) is the only record of those values. The
+  daemon's TMPDIR is the manager's, so `supervisor/conflicts.py` moves
+  the file out every tick and before a start (`private_tmpdir` empties
+  the directory). One file name per project, not per connection: a
+  second rebase in the same cycle overwrites the first (slice 17). The
+  fourth case, a field update of a row the database deleted, is in no
+  file: patch `0003` makes db-sync log it as a WARNING that logtail
+  turns into a warning event.
 - `supervisor/layout.py` is the only place that knows where a checkout is
   (`work/<project>-<modified schema>`, db-sync 2.4.0). A project whose
   2.3.0 tree (`work/<project>/`) still exists is not started until the

@@ -28,7 +28,7 @@ GEODIFF_FILE = {
          "changes": [{"column": 3, "base": "x", "old": "y", "new": "z"},
                      {"column": 4, "base": 1, "old": 2, "new": 3}]},
         {"table": "punkter", "type": "conflict", "fid": "50",
-         "changes": [{"column": 3, "base": "k", "new": "updated in db"}]},   # server deleted the row
+         "changes": [{"column": 3, "base": "k", "new": "updated in db"}]},   # the field deleted the row
         {"table": "linjer", "type": "conflict", "fid": "2",
          "changes": [{"column": 1, "base": None, "old": "s", "new": "d"}]},
     ]
@@ -38,12 +38,13 @@ GEODIFF_FILE = {
 class ParseTests(SimpleTestCase):
     def test_parse_and_summarize(self):
         parsed = conflicts.parse(json.dumps(GEODIFF_FILE))
-        self.assertEqual([(c.table, c.fid, c.deleted_on_server) for c in parsed],
+        self.assertEqual([(c.table, c.fid, c.deleted_in_field) for c in parsed],
                          [("punkter", "17", False), ("punkter", "41", False), ("punkter", "50", True), ("linjer", "2", False)])
-        self.assertEqual(parsed[0].columns, [{"column": 3, "base": "a", "server": "field", "database": "db"}])
+        self.assertEqual(parsed[0].columns, [{"column": 3, "base": "a", "field": "field", "database": "db"}])
         summary = conflicts.summarize(parsed)
         self.assertEqual(list(summary), ["linjer", "punkter"])
-        self.assertEqual(summary["punkter"], {"count": 3, "fids": ["17", "41", "50"], "deleted_on_server": 1, "columns": [3, 4]})
+        self.assertEqual(summary["punkter"], {"count": 3, "fids": ["17", "41", "50"], "fids_deleted": ["50"],
+                                              "deleted_in_field": 1, "columns": [3, 4]})
         self.assertEqual(conflicts.parse("not json"), [])
         self.assertEqual(conflicts.parse('{"geodiff": []}'), [])
 
@@ -51,12 +52,17 @@ class ParseTests(SimpleTestCase):
         summary = conflicts.summarize(conflicts.parse(json.dumps(GEODIFF_FILE)))
         conflicts.name_columns(summary, {"punkter": ["fid", "uuid", "geom", "namn", "typ"]})
         text = conflicts.describe(summary, "20261027T101502-1-punkter.gpkg.json")
-        self.assertIn("1 conflict in linjer (column #1); fid 2", text)
-        self.assertIn("3 conflicts in punkter (namn, typ), 1 deleted on the server; fid 17, 41, 50", text)
+        # The direction as the two-way test found it (2026-10-26e): the database wins.
+        self.assertIn("1 field value in linjer (column #1) overwritten by the database value, fid 2", text)
+        self.assertIn("2 field values in punkter (namn, typ) overwritten by the database values, fid 17, 41", text)
+        self.assertIn("1 database update of row deleted in the field in punkter dropped with the row, fid 50", text)
         self.assertTrue(text.startswith("rebase: "))
-        self.assertIn("database values dropped (server wins); see conflicts/20261027T101502-1-punkter.gpkg.json", text)
+        self.assertIn("The overwritten field values are in conflicts/20261027T101502-1-punkter.gpkg.json", text)
+        self.assertNotIn("server", text)
         many = conflicts.summarize([conflicts.Conflict("t", str(i)) for i in range(20)])
         self.assertIn("fid 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11 and 8 more", conflicts.describe(many, "x.json"))
+        only_deleted = conflicts.summarize([conflicts.Conflict("t", "9", deleted_in_field=True)])
+        self.assertTrue(conflicts.describe(only_deleted, "x.json").endswith(". Record: conflicts/x.json"))
 
 
 class FilesTests(SimpleTestCase):
@@ -79,6 +85,8 @@ class FilesTests(SimpleTestCase):
             self.assertEqual(saved[0]["connection"], "1-punkter.gpkg")
             self.assertEqual(saved[0]["count"], 4)
             self.assertEqual(saved[0]["tables"]["punkter"]["fids"], ["17", "41", "50"])
+            self.assertEqual(saved[0]["tables"]["punkter"]["deleted_in_field"], 1)
+            self.assertEqual(saved[0]["tables"]["punkter"]["deleted_on_server"], 1)   # v1 alias, kept
             overview = conflicts.overview(work)
             self.assertEqual(overview["last_at"].strftime("%Y%m%dT%H%M%S"), "20260901T080052")
             self.assertEqual(overview["count_30d"], 0)                        # 2026-09-01 is older than 30 days
@@ -119,8 +127,8 @@ class CollectTests(SimpleTestCase):
         self.assertTrue(saved[0]["path"].name.endswith("-1-punkter.gpkg.json"))
         self.events.warning.assert_called_once()
         message = self.events.warning.call_args.args[1]
-        self.assertIn("3 conflicts in punkter (namn, typ)", message)
-        self.assertIn("fid 17, 41, 50", message)
+        self.assertIn("2 field values in punkter (namn, typ) overwritten by the database values, fid 17, 41", message)
+        self.assertIn("deleted in the field in punkter dropped with the row, fid 50", message)
         self.conditions.activate.assert_not_called()
         self.alerts.notify.assert_not_called()                 # mail_on_conflict off
         # Empty TMPDIR: nothing happens.

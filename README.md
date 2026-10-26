@@ -305,27 +305,41 @@ direction badge follows the permission at every check). Then database
 edits in `modified` are pushed to Mergin on the next cycle, and the
 field's changes are pulled into `base` and `modified`. When both sides
 changed between two cycles, db-sync rebases the database's changes on
-top of the server's (`geodiff rebase-db`):
+top of the server's (`geodiff rebase-db`) and pushes the result. The
+rules, as the two-way test of 2026-10-26 found them (review note
+`2026-10-26e-two-way-test.md`):
 
-1. Different rows, or different columns of one row, merge: both sides
-   end up with both changes.
-2. The same column of the same row is a conflict: the server's value
-   stands on both sides and the database's value is dropped.
-3. A database update of a row the field deleted is dropped with the
-   row; the other order is recorded by the field test (review note
-   `…-two-way-test.md`).
-4. Every dropped database value is in a conflict file that the manager
-   keeps: the project page's **Conflicts** section lists them with the
-   layer and the rows (fid), operators download the file, and one
-   `warning` event names the rows. Nothing is mailed unless the
-   project's `mail_on_conflict` is on (admin), because in a two-way
-   project a conflict is expected behaviour. In a one-way project a
-   rebase can only mean someone wrote into `modified`: it is the
-   error-level condition `content_divergence` with its mail.
+1. A delete wins over an update, whichever side deletes.
+2. Same row, same column: the side that syncs last wins (Mergin Maps'
+   documented rule, "the editor who syncs last wins"; no timestamps).
+   In a db-sync setup the database is *always* the last to sync in a
+   concurrent edit: the daemon pulls the field's version first (that is
+   the rebase) and pushes its own change on top. So **the database wins
+   every same-column conflict**, and the field's value is overwritten on
+   both sides.
+3. Different columns of one row, and new rows (fids renumbered), merge.
+4. Records: a same-column conflict and a database update of a
+   field-deleted row are written to the conflicts file and surfaced by
+   the manager: the project page's **Conflicts** section lists the
+   files with layer and rows (fid), operators download them, and one
+   `warning` event names the rows and says which value was overwritten.
+   A field update of a database-deleted row leaves no record in geodiff;
+   the manager's patch `0003` makes db-sync log it, and it appears as the
+   `warning` event "field update lost: ..." with the field's values.
+   Nothing is mailed unless the project's `mail_on_conflict` is on
+   (admin), because in a two-way project a conflict is expected
+   behaviour. In a one-way project a rebase can only mean someone wrote
+   into `modified`: it is the error-level condition `content_divergence`
+   with its mail.
 
-The recommendation the first installation follows: one-way during
-field work unless database edits must reach the field, and never both
-a field crew and a database writer on the same rows.
+What follows from rules 2 and 4: a field crew's correction can be
+silently replaced by an office edit, and an office edit of a row the
+field deletes is silently dropped. During active field work keep the
+project one-way, or make sure no database writer touches rows the field
+may edit. Two details for database writers: a geometry must match the
+layer exactly (a PointZ layer refuses a 2D point), and nothing the field
+form would fill in (defaults, expressions) is filled in for a database
+insert.
 
 ### JSON API
 

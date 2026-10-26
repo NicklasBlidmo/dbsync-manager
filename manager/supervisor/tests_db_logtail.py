@@ -109,7 +109,9 @@ class ConflictCollectionTests(TestCase):
         self.assertEqual(saved[0]["connection"], "1-punkter.gpkg")
         event = Event.objects.get(project=self.project, level="warning")
         self.assertEqual(event.source, "dbsync")
-        self.assertIn("3 conflicts in punkter (column #3, column #4), 1 deleted on the server; fid 17, 41, 50", event.message)
+        self.assertIn("2 field values in punkter (column #3, column #4) overwritten by the database values, fid 17, 41",
+                      event.message)
+        self.assertIn("1 database update of row deleted in the field in punkter dropped with the row, fid 50", event.message)
         self.assertIn(f"see conflicts/{saved[0]['name']}", event.message)
         self.project.refresh_from_db()
         self.assertEqual(self.project.active_conditions, {})

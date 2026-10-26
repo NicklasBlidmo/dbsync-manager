@@ -38,6 +38,10 @@ KeyError: 'version'
 """
 
 
+LOST_UPDATE_LINE = ("2026-10-26 15:20:01,000 -WARNING - field update lost: table punkter row (column 0 = 631) was deleted "
+                    "in the database; the update from Mergin Maps (column 3: 'ny text') is dropped with the row\n")
+
+
 class ParseTests(SimpleTestCase):
     def test_lines_and_continuations(self):
         records = parse(POC_SEGMENT)
@@ -54,6 +58,12 @@ class ParseTests(SimpleTestCase):
 class ClassifyTests(SimpleTestCase):
     def kinds(self, text):
         return [(a.kind, a.version) for a in (classify(r) for r in parse(text)) if a is not None]
+
+    def test_lost_field_update_is_a_warning_other_warnings_stay_errors(self):
+        # Patch 0003 (slice 17b): the one WARNING line that is informational.
+        self.assertEqual(self.kinds(LOST_UPDATE_LINE), [("warning", None)])
+        self.assertEqual(self.kinds("2026-10-26 15:20:01,000 -WARNING - Mergin Maps auth token was rejected\n"),
+                         [("error", None)])
 
     def test_poc_segment(self):
         self.assertEqual(self.kinds(POC_SEGMENT), [

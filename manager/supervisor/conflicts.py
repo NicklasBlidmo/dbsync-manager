@@ -1,30 +1,43 @@
 """
-Rebase conflicts made visible (slice 17, A; brief 2026-10-26c).
+Rebase conflicts made visible (slice 17, A and B; brief 2026-10-26c, test
+note 2026-10-26e).
 
 When both sides of a two-way project changed between two cycles, db-sync's
 pull() runs `geodiff rebase-db`: the database's changes are rewritten on
-top of the server's. The same column of the same row is a conflict: the
-server's value stands, the database's value is dropped and written by
-geodiff to `<TMPDIR>/<project name>-dbsync-pull-conflicts` (only when
-there were conflicts; geodiff removes the file first). db-sync never looks
-at that file, and the log says nothing at INFO. The supervisor's per-daemon
-TMPDIR is ours, so every tick (and before a start, which empties TMPDIR)
-the file is moved to `/data/projects/<id>/conflicts/<time>-<file>.json`,
-the newest KEEP are kept, and one event is written.
+top of the server's and then pushed, so the database is always the side
+that syncs last. What the two-way test established:
+
+1. A delete wins over an update, whichever side deletes.
+2. Same row, same column: the database wins; the field's value is
+   overwritten on both sides.
+3. Different columns of one row, and new rows (fids renumbered), merge.
+4. A same-column conflict and a database update of a field-deleted row
+   are written by geodiff to `<TMPDIR>/<project name>-dbsync-pull-conflicts`
+   (only when there were conflicts; geodiff removes the file first). A
+   field update of a database-deleted row leaves no record in geodiff;
+   patch 0003 makes db-sync log it as a WARNING, which logtail turns into
+   a warning event.
+
+db-sync never looks at the conflicts file and the log says nothing at
+INFO. The supervisor's per-daemon TMPDIR is ours, so every tick (and
+before a start, which empties TMPDIR) the file is moved to
+`/data/projects/<id>/conflicts/<time>-<file>.json`, the newest KEEP are
+kept, and one event is written.
 
 geodiff's file (changesetutils.cpp conflictsToJSON):
 
     {"geodiff": [{"table": "punkter", "type": "conflict", "fid": "17",
-                  "changes": [{"column": 3, "base": ..., "old": <server>, "new": <database>}]}]}
+                  "changes": [{"column": 3, "base": ..., "old": <field>, "new": <database>}]}]}
 
-`column` is the column's position in the table, `old` is the server's
-value ("theirs"), `new` the database's ("ours"); an update that met the
-server's delete has no `old`. Column names come from the modified schema
-when the database answers, else "column #3".
+`column` is the column's position in the table; `old` is the field's
+value, the one that was overwritten; `new` the database's, which stands
+on both sides. A change without `old` is a database update of a row the
+field deleted: dropped with the row. Column names come from the modified
+schema when the database answers, else "column #3".
 
 Nothing here raises a condition in a two-way project: a rebase conflict
 is what two-way means. `SyncProject.mail_on_conflict` sends a mail per
-event for installations where a dropped database edit is news. In a
+event for installations where an overwritten field edit is news. In a
 one-way project nothing may write `modified`, so a rebase there is the
 same error-level condition as content divergence (`content_divergence:
 <file>:<table>`), with its mail.
@@ -59,8 +72,8 @@ MAIL_CONDITION = "rebase_conflict"
 class Conflict:
     table: str
     fid: str
-    columns: list = field(default_factory=list)   # [{"column": int|str, "base", "server", "database"}]
-    deleted_on_server: bool = False               # database update vs server delete: delete wins
+    columns: list = field(default_factory=list)   # [{"column": int|str, "base", "field", "database"}]
+    deleted_in_field: bool = False                # database update of a row the field deleted: dropped
 
 
 def parse(text: str) -> list:
@@ -74,32 +87,26 @@ def parse(text: str) -> list:
     for entry in entries or []:
         if not isinstance(entry, dict):
             continue
-        changes = entry.get("changes") or []
-        columns = []
-        for change in changes:
-            if not isinstance(change, dict):
-                continue
-            columns.append({
-                "column": change.get("column"),
-                "base": change.get("base"),
-                "server": change.get("old"),
-                "database": change.get("new"),
-            })
-        deleted = bool(changes) and all("old" not in c for c in changes if isinstance(c, dict))
+        changes = [c for c in (entry.get("changes") or []) if isinstance(c, dict)]
+        columns = [{"column": c.get("column"), "base": c.get("base"), "field": c.get("old"), "database": c.get("new")}
+                   for c in changes]
+        deleted = bool(changes) and all("old" not in c for c in changes)
         result.append(Conflict(table=str(entry.get("table", "?")), fid=str(entry.get("fid", "?")),
-                               columns=columns, deleted_on_server=deleted))
+                               columns=columns, deleted_in_field=deleted))
     return result
 
 
 def summarize(conflicts: list) -> dict:
-    """{table: {"count", "fids", "deleted_on_server", "columns"}}, tables sorted."""
+    """{table: {"count", "fids", "fids_deleted", "deleted_in_field", "columns"}}, tables sorted."""
     summary = {}
     for conflict in conflicts:
-        entry = summary.setdefault(conflict.table, {"count": 0, "fids": [], "deleted_on_server": 0, "columns": []})
+        entry = summary.setdefault(conflict.table, {"count": 0, "fids": [], "fids_deleted": [],
+                                                    "deleted_in_field": 0, "columns": []})
         entry["count"] += 1
         entry["fids"].append(conflict.fid)
-        if conflict.deleted_on_server:
-            entry["deleted_on_server"] += 1
+        if conflict.deleted_in_field:
+            entry["deleted_in_field"] += 1
+            entry["fids_deleted"].append(conflict.fid)
         for column in conflict.columns:
             name = column["column"]
             if name not in entry["columns"]:
@@ -118,22 +125,33 @@ def name_columns(summary: dict, names_by_table: dict) -> dict:
     return summary
 
 
+def _fids(fids: list) -> str:
+    if len(fids) <= FID_LIST_MAX:
+        return ", ".join(fids)
+    return f"{', '.join(fids[:FID_LIST_MAX])} and {len(fids) - FID_LIST_MAX} more"
+
+
 def describe(summary: dict, saved_name: str) -> str:
-    """The event text: one line per table, the fids when there are few."""
+    """The event text: who overwrote whom, per table, the fids when there are few."""
     parts = []
+    overwritten = False
     for table, entry in summary.items():
-        text = f"{entry['count']} conflict{'s' if entry['count'] != 1 else ''} in {table}"
-        if entry["columns"]:
-            text += f" ({', '.join(str(c) for c in entry['columns'])})"
-        if entry["deleted_on_server"]:
-            text += f", {entry['deleted_on_server']} deleted on the server"
-        fids = entry["fids"]
-        if len(fids) <= FID_LIST_MAX:
-            text += f"; fid {', '.join(fids)}"
-        else:
-            text += f"; fid {', '.join(fids[:FID_LIST_MAX])} and {len(fids) - FID_LIST_MAX} more"
-        parts.append(text)
-    return (f"rebase: {'; '.join(parts)}: database values dropped (server wins); see {SUBDIR}/{saved_name}")
+        same = [f for f in entry["fids"] if f not in entry["fids_deleted"]]
+        if same:
+            overwritten = True
+            columns = f" ({', '.join(str(c) for c in entry['columns'])})" if entry["columns"] else ""
+            parts.append(f"{len(same)} field value{'s' if len(same) != 1 else ''} in {table}{columns} "
+                         f"overwritten by the database value{'s' if len(same) != 1 else ''}, fid {_fids(same)}")
+        if entry["fids_deleted"]:
+            n = len(entry["fids_deleted"])
+            parts.append(f"{n} database update{'s' if n != 1 else ''} of row{'s' if n != 1 else ''} deleted in the "
+                         f"field in {table} dropped with the row{'s' if n != 1 else ''}, fid {_fids(entry['fids_deleted'])}")
+    text = "rebase: " + "; ".join(parts)
+    if overwritten:
+        text += f". The overwritten field values are in {SUBDIR}/{saved_name}"
+    else:
+        text += f". Record: {SUBDIR}/{saved_name}"
+    return text
 
 
 # --- files ------------------------------------------------------------------------------
@@ -190,17 +208,20 @@ def prune(work_dir, keep: int = KEEP) -> int:
     return removed
 
 
+def _at_from_name(name: str):
+    match = SAVED_RE.match(name)
+    if not match:
+        return None, ""
+    try:
+        at = timezone.make_aware(datetime.strptime(match["ts"], "%Y%m%dT%H%M%S"), timezone.get_default_timezone())
+    except ValueError:
+        return None, match["label"]
+    return at, match["label"]
+
+
 def saved_entry(path: Path) -> dict:
     """What the page and the API show for one saved file."""
-    match = SAVED_RE.match(path.name)
-    at = None
-    label = ""
-    if match:
-        try:
-            at = timezone.make_aware(datetime.strptime(match["ts"], "%Y%m%dT%H%M%S"), timezone.get_default_timezone())
-        except ValueError:
-            at = None
-        label = match["label"]
+    at, label = _at_from_name(path.name)
     if at is None:
         at = _stamp(path)
     try:
@@ -211,7 +232,10 @@ def saved_entry(path: Path) -> dict:
         "name": path.name,
         "at": at,
         "connection": label,
-        "tables": {t: {"count": e["count"], "fids": e["fids"], "deleted_on_server": e["deleted_on_server"]}
+        "tables": {t: {"count": e["count"], "fids": e["fids"], "fids_deleted": e["fids_deleted"],
+                       "deleted_in_field": e["deleted_in_field"],
+                       # API v1 alias from slice 17a's first day (misnamed; fields are never removed).
+                       "deleted_on_server": e["deleted_in_field"]}
                    for t, e in summary.items()},
         "count": sum(e["count"] for e in summary.values()),
         "size": path.stat().st_size if path.exists() else 0,
@@ -234,12 +258,8 @@ def overview(work_dir, days: int = 30) -> dict:
     recent = 0
     cutoff = timezone.now() - timedelta(days=days)
     for name in names:
-        match = SAVED_RE.match(name)
-        if not match:
-            continue
-        try:
-            at = timezone.make_aware(datetime.strptime(match["ts"], "%Y%m%dT%H%M%S"), timezone.get_default_timezone())
-        except ValueError:
+        at, _ = _at_from_name(name)
+        if at is None:
             continue
         last_at = at if last_at is None or at > last_at else last_at
         if at >= cutoff:

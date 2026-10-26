@@ -289,7 +289,8 @@ class SyncProject(OwnedModel):
 
     notify_emails = ArrayField(models.EmailField(), default=list, blank=True)
     # Slice 17: a rebase conflict (two-way, both sides changed the same
-    # value; the server wins) is an event; this mails it too.
+    # value; the database wins and the field's value is overwritten) is an
+    # event; this mails it too.
     mail_on_conflict = models.BooleanField(
         default=False,
         help_text="Mail the alert recipients for every rebase conflict (a database edit dropped because the field "

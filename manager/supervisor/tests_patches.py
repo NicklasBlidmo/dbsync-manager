@@ -8,7 +8,11 @@ The db-sync patches in patches/ (applied at image build, Dockerfile):
   during a connection pull lets that pull finish and skips the rest; a
   stop request during the sleep ends the daemon within a second, exit
   code 0; a stop request during the pull step ends the cycle before push,
-  through 2.4.0's `except Exception` (SystemExit is not an Exception).
+  through 2.4.0's `except Exception` (SystemExit is not an Exception);
+- the lost-update report of 0003 (two-way test 2026-10-26e, T6d): a row
+  deleted in the database that the server's changeset updates is logged
+  as a WARNING with the row's key and the field's values; other
+  combinations are silent; a geodiff failure never breaks the pull.
 
 The patched modules are loaded from patches/ with their dependencies
 (psycopg2, mergin, config, ...) stubbed. No database, no Mergin.
@@ -40,7 +44,10 @@ class PatchesApplyTests(SimpleTestCase):
         if GIT is None:
             self.skipTest("git not available")
         patches = sorted(PATCHES.glob("*.patch"))
-        self.assertEqual([p.name for p in patches], ["0002-Stop-gracefully-on-SIGTERM.patch"])   # 0001 shipped in 2.4.0
+        self.assertEqual([p.name for p in patches], [   # 0001 shipped in 2.4.0
+            "0002-Stop-gracefully-on-SIGTERM.patch",
+            "0003-Report-field-updates-lost-to-a-database-delete.patch",
+        ])
         with tempfile.TemporaryDirectory() as tmp:
             for name in SOURCES:
                 shutil.copy(PATCHES / "upstream" / name, Path(tmp) / name)
@@ -222,6 +229,48 @@ class PatchedDaemonTests(SimpleTestCase):
         self.assertEqual(ctx.exception.code, 0)
         self.assertEqual(pushes, [])
         sleep.assert_not_called()                # no retry wait: this was not a failure
+
+    def test_lost_field_updates_are_found_by_row_key_and_logged(self):
+        dbsync = self.dbsync
+        # as-json shape: an update carries old+new for changed columns and old only for the key;
+        # a delete carries every old value.
+        ours = [
+            {"table": "punkter", "type": "delete",
+             "changes": [{"column": 0, "old": 631}, {"column": 1, "old": "u-631"}, {"column": 3, "old": "x"}]},
+            {"table": "punkter", "type": "delete",
+             "changes": [{"column": 0, "old": 2}, {"column": 1, "old": "u-2"}, {"column": 3, "old": "y"}]},
+            {"table": "punkter", "type": "update",
+             "changes": [{"column": 0, "old": 5}, {"column": 3, "old": "a", "new": "b"}]},
+        ]
+        theirs = [
+            {"table": "punkter", "type": "update",
+             "changes": [{"column": 0, "old": 631}, {"column": 3, "old": "x", "new": "ny text"}]},   # lost
+            {"table": "punkter", "type": "update",
+             "changes": [{"column": 0, "old": 7}, {"column": 3, "old": "q", "new": "r"}]},           # other row
+            {"table": "punkter", "type": "delete",
+             "changes": [{"column": 0, "old": 2}, {"column": 1, "old": "u-2"}, {"column": 3, "old": "y"}]},  # both deleted
+            {"table": "linjer", "type": "update",
+             "changes": [{"column": 0, "old": 631}, {"column": 2, "old": 1, "new": 2}]},              # other table
+        ]
+        self.assertEqual(dbsync._lost_field_updates(ours, theirs),
+                         [("punkter", {0: 631}, [(3, "ny text")])])
+        self.assertEqual(dbsync._lost_field_updates([], theirs), [])
+        dbsync._geodiff_list_changes_details = lambda path: ours if path.endswith("base2our") else theirs
+        with self.assertLogs(level="WARNING") as logs:
+            dbsync._report_lost_field_updates("/t/p-dbsync-pull-base2our", "/t/p-dbsync-pull-base2their")
+        self.assertEqual(len(logs.output), 1)
+        self.assertIn("field update lost: table punkter row (column 0 = 631) was deleted in the database; "
+                      "the update from Mergin Maps (column 3: 'ny text') is dropped with the row", logs.output[0])
+
+        def boom(path):
+            raise RuntimeError("geodiff failed!")
+
+        dbsync._geodiff_list_changes_details = boom
+        with self.assertLogs(level="WARNING") as logs:
+            dbsync._report_lost_field_updates("a", "b")          # reported, never raised
+        self.assertIn("could not compare the changesets", logs.output[0])
+        self.assertIn("_report_lost_field_updates(tmp_base2our, tmp_base2their)",
+                      (PATCHES / "dbsync.py.patched").read_text(encoding="utf-8"))
 
     def test_sleep_unless_stopped_returns_early_and_the_retry_wait_uses_it(self):
         dbsync, daemon = self.dbsync, self.daemon

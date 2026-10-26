@@ -2,11 +2,21 @@
 
 ## Unreleased
 
+- Slice 17 B (two-way test 2026-10-26e): the direction was the other
+  way round. In a concurrent edit the database syncs last and wins: the
+  field's value is overwritten on both sides, and a database update of
+  a field-deleted row is dropped. Event text, page, `docs/api.md` and
+  the README's "Two-way sync" rules corrected (the API's
+  `deleted_on_server` stays as an alias of `deleted_in_field`). The
+  case geodiff records nowhere, a field update of a row the database
+  deleted, is now logged by db-sync (patch `0003`, offered upstream) and
+  becomes the `warning` event "field update lost: ..." with the field's
+  values.
 - Slice 17 A (brief 2026-10-26c): rebase conflicts become visible. The
   conflict file geodiff writes to the daemon's TMPDIR during a two-way
-  rebase (database and field changed the same value; the server wins)
-  is moved to `/data/projects/<id>/conflicts/<time>-<file>.json` (last
-  50 kept) and becomes one `warning` event naming layer and rows; a
+  rebase (database and field changed the same value) is moved to
+  `/data/projects/<id>/conflicts/<time>-<file>.json` (last 50 kept) and
+  becomes one `warning` event naming layer and rows; a
   rebase in a one-way project is the error-level `content_divergence`
   condition. Project setting `mail_on_conflict` (admin, default off)
   mails each one. Project page section "Conflicts" with download; API

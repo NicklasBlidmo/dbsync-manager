@@ -20,6 +20,7 @@ and auth-token messages, which fall through to the level rules):
 | `ERROR - There are pending changes on server ...`  | server moved between pull and push        | info; warn after 5 in a row with pending DB edits |
 | `ERROR - GEODIFF: ...` (anything else)             | apply failed                              | error event, close pull as failed |
 | `ERROR - ...` (DbSyncError text, download errors)  | the cycle failed                          | error event                       |
+| `WARNING - field update lost: ...` (patch 0003)    | a database delete dropped a field update  | warning event                     |
 | `Traceback` block                                  | an exception escaped                      | error event                       |
 | login / token / "nothing to do" / progress lines   | noise                                     | ignored                           |
 
@@ -53,6 +54,7 @@ PUSH_FINISHED_RE = re.compile(r"--- push finished - new project version v(\d+)")
 STATE_NAME = "logtail.json"
 DEDUP_WINDOW = timedelta(hours=1)
 SERVER_MOVED_TEXT = "pending changes on server"
+LOST_UPDATE_PREFIX = "field update lost:"
 SERVER_MOVED_WARN_AFTER = 5
 MAX_READ = 4 * 1024 * 1024   # per tick; a runaway log does not stall the loop
 IGNORED_PREFIXES = (
@@ -72,7 +74,7 @@ class Record:
 
 @dataclass
 class Action:
-    kind: str                 # pull_open | pull_failed | push_ok | push_failed | error | info | server_moved
+    kind: str                 # pull_open | pull_failed | push_ok | push_failed | error | warning | info | server_moved
     message: str
     version: int | None = None
     at: datetime | None = None
@@ -127,6 +129,11 @@ def classify(record: Record):
         if SERVER_MOVED_TEXT in first:
             return Action("server_moved", msg, at=record.at)
         return Action("error", msg, at=record.at)
+    if record.level == "WARNING" and first.startswith(LOST_UPDATE_PREFIX):
+        # Patch 0003: a rebase is about to drop the field's update of a row
+        # the database deleted (two-way test 2026-10-26, T6d). Nothing else
+        # records it.
+        return Action("warning", msg, at=record.at)
     if record.level in ("WARNING", "CRITICAL", "FATAL"):
         return Action("error", msg, at=record.at)
     if first.startswith(IGNORED_PREFIXES):
@@ -270,6 +277,8 @@ def apply(project, actions, state: TailState, now=None) -> dict:
             state.server_moved_streak = 0
         elif action.kind == "info":
             _record_deduped(project, Event.Level.INFO, action.message, state, now, counts)
+        elif action.kind == "warning":
+            _record_deduped(project, Event.Level.WARNING, action.message, state, now, counts)
         elif action.kind == "server_moved":
             # Not an error: the server moved between pull and push; the next
             # cycle pulls. Warn once when it keeps happening while local
