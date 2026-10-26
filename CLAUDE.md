@@ -52,6 +52,13 @@ Invariants learned the hard way:
 - db-sync 2.4.0 retries a failed login or init inside the process (about
   an hour with its default `max_failed_retries: 10`). The generated config
   sets it to 1 so the exit reaches `exits.classify_exit`; do not raise it.
+- geodiff's rebase conflict file (`<TMPDIR>/<project name>-dbsync-pull-
+  conflicts`, written only when a two-way rebase dropped database values)
+  is the only record of those values. The daemon's TMPDIR is the
+  manager's, so `supervisor/conflicts.py` moves the file out every tick
+  and before a start (`private_tmpdir` empties the directory). One file
+  name per project, not per connection: a second rebase in the same
+  cycle overwrites the first (slice 17).
 - `supervisor/layout.py` is the only place that knows where a checkout is
   (`work/<project>-<modified schema>`, db-sync 2.4.0). A project whose
   2.3.0 tree (`work/<project>/`) still exists is not started until the

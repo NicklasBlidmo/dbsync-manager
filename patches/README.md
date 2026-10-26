@@ -7,7 +7,7 @@ a patch is deleted here once a db-sync release ships the fix and
 
 | Patch | What | Upstream |
 |---|---|---|
-| `0002-Stop-gracefully-on-SIGTERM.patch` | SIGTERM sets a flag; the loops stop at the next connection boundary, a pull or push in progress completes, exit 0 (review note 2026-10-20b, finding 1) | to be filed against 2.4.0; the issue and PR text are in `UPSTREAM.md` |
+| `0002-Stop-gracefully-on-SIGTERM.patch` | SIGTERM sets a flag; the loops stop at the next connection boundary, a pull or push in progress completes, exit 0 (review note 2026-10-20b, finding 1) | MerginMaps/db-sync#193, PR #194 (filed 2026-10-26) |
 
 Shipped upstream and removed here:
 

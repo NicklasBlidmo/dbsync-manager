@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Slice 17 A (brief 2026-10-26c): rebase conflicts become visible. The
+  conflict file geodiff writes to the daemon's TMPDIR during a two-way
+  rebase (database and field changed the same value; the server wins)
+  is moved to `/data/projects/<id>/conflicts/<time>-<file>.json` (last
+  50 kept) and becomes one `warning` event naming layer and rows; a
+  rebase in a one-way project is the error-level `content_divergence`
+  condition. Project setting `mail_on_conflict` (admin, default off)
+  mails each one. Project page section "Conflicts" with download; API
+  `conflicts: {last_at, count_30d}` on the project and
+  `GET /api/v1/projects/<id>/conflicts/[<name>/]`. README section
+  "Two-way sync". Migration 0017.
 - Slice 16 (brief 2026-10-21d): db-sync 2.4.0. One checkout per connection
   is upstream (#187, our fix for #163), so patch `0001` is removed; the
   checkout now lives at `work/<project>-<modified schema>` and holds only

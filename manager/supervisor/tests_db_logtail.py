@@ -4,14 +4,20 @@ segment yields pull runs with ok null, never true, since no comment is
 observed; the check confirms them; repeated errors are counted. Tagged `db`.
 """
 
+import json
+import tempfile
 from datetime import timedelta
+from pathlib import Path
+from unittest import mock
 
-from django.test import TestCase, tag
+from django.test import TestCase, override_settings, tag
 from django.utils import timezone
 
-from registry.models import Database, Event, MerginAccount, SyncProject, SyncRun
+from registry.models import Database, Event, MerginAccount, SyncConnection, SyncProject, SyncRun, SyncStatus
 
-from . import housekeeping, logtail
+from . import conflicts, housekeeping, logtail
+from .core import Supervisor
+from .tests_conflicts import GEODIFF_FILE
 from .logtail import TailState, apply, classify, parse
 from .tests_logtail import POC_SEGMENT
 
@@ -67,3 +73,59 @@ class ApplyTests(TestCase):
         self.assertEqual(result, {"events": 1, "runs": 1})
         self.assertEqual(set(Event.objects.filter(project=project).values_list("message", flat=True)), {"old user action", "new"})
         self.assertEqual(SyncRun.objects.filter(project=project).count(), 1)
+
+
+@tag("db")
+class ConflictCollectionTests(TestCase):
+    """Slice 17, A: a conflict file in the daemon's TMPDIR is moved to the
+    project's conflicts dir and becomes one warning event naming the
+    connection's layer and rows; in a one-way project it is the
+    content_divergence condition instead."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        override = override_settings(DBSYNC_DATA_DIR=Path(self.tmp.name))
+        override.enable()
+        self.addCleanup(override.disable)
+        self.project = make_project()
+        self.conn = SyncConnection.objects.create(project=self.project, sync_file="1-punkter.gpkg",
+                                                  modified_schema="l_s_punkter", base_schema="l_b_punkter")
+        self.status = SyncStatus.objects.create(
+            project=self.project, connection=self.conn, direction="two_way", mergin_permission="writer",
+            tables=[{"name": "punkter", "geometry_column": "geom"}, {"name": "linjer", "geometry_column": "geom"}],
+        )
+        self.tmpdir = self.project.work_dir / "tmp"
+        self.tmpdir.mkdir(parents=True)
+        self.sup = Supervisor(1)
+
+    def test_file_is_moved_and_the_event_written(self):
+        (self.tmpdir / "log-dbsync-pull-conflicts").write_text(json.dumps(GEODIFF_FILE))
+        with mock.patch("supervisor.conflicts._column_names", return_value={}):
+            self.sup._collect_conflicts(self.project, self.sup._paths(self.project.pk))
+        self.assertEqual(list(self.tmpdir.iterdir()), [])
+        saved = conflicts.list_saved(self.project.work_dir)
+        self.assertEqual(len(saved), 1)
+        self.assertEqual(saved[0]["connection"], "1-punkter.gpkg")
+        event = Event.objects.get(project=self.project, level="warning")
+        self.assertEqual(event.source, "dbsync")
+        self.assertIn("3 conflicts in punkter (column #3, column #4), 1 deleted on the server; fid 17, 41, 50", event.message)
+        self.assertIn(f"see conflicts/{saved[0]['name']}", event.message)
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.active_conditions, {})
+        # Second tick, nothing new: no second event.
+        self.sup._collect_conflicts(self.project, self.sup._paths(self.project.pk))
+        self.assertEqual(Event.objects.filter(project=self.project).count(), 1)
+
+    def test_one_way_rebase_raises_the_condition_with_a_mail(self):
+        SyncStatus.objects.filter(pk=self.status.pk).update(direction="one_way", mergin_permission="reader")
+        (self.tmpdir / "log-dbsync-pull-conflicts").write_text(json.dumps(GEODIFF_FILE))
+        with mock.patch("supervisor.conflicts._column_names", return_value={}), \
+                mock.patch("supervisor.conditions.alerts.notify", return_value=True) as notify:
+            self.sup._collect_conflicts(self.project, self.sup._paths(self.project.pk))
+        self.project.refresh_from_db()
+        self.assertEqual(sorted(self.project.active_conditions),
+                         ["content_divergence:1-punkter.gpkg:linjer", "content_divergence:1-punkter.gpkg:punkter"])
+        self.assertEqual(self.project.health, "failed")
+        self.assertEqual(Event.objects.filter(project=self.project, level="error").count(), 2)
+        self.assertEqual(notify.call_count, 2)

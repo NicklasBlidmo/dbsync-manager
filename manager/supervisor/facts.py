@@ -7,6 +7,8 @@ the operations have not already recorded.
 
 from registry.models import Operation, SyncRun
 
+from . import conflicts as conflicts_mod
+
 CONTENT_KINDS = ("only_base", "only_modified", "changed")
 
 
@@ -170,5 +172,21 @@ def state_for(project) -> dict:
         "count_divergence": sorted(k for k in active if k.startswith(("divergence:", "db_behind:", "stranded_db_edits:"))),
         "content_divergence": {c["sync_file"]: c["content_divergence"] for c in connections if c["content_divergence"]},
         "last_verification": verification_for(project),
+        "conflicts": conflicts_overview(project),
         "connections": connections,
     }
+
+
+def conflicts_overview(project) -> dict:
+    """Slice 17: {last_at, count_30d} of the saved rebase conflict files."""
+    data = conflicts_mod.overview(project.work_dir)
+    return {"last_at": _iso(data["last_at"]), "count_30d": data["count_30d"]}
+
+
+def conflicts_for(project) -> list:
+    """Every saved conflict file, newest first: name, time, connection, per-table counts and fids."""
+    result = []
+    for entry in conflicts_mod.list_saved(project.work_dir):
+        result.append({"name": entry["name"], "at": _iso(entry["at"]), "connection": entry["connection"],
+                       "count": entry["count"], "tables": entry["tables"]})
+    return result

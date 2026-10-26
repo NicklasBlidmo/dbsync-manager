@@ -16,12 +16,13 @@ from django.core.paginator import Paginator
 from django.utils import timezone
 from django.contrib.auth.decorators import login_required, permission_required
 from django.db import IntegrityError
-from django.http import HttpResponse, HttpResponseBadRequest
+from django.http import FileResponse, Http404, HttpResponse, HttpResponseBadRequest
 from django.shortcuts import get_object_or_404, redirect, render
 from django.views.decorators.http import require_GET, require_POST
 
 from registry import events
 from registry.models import Database, Event, Hook, InstallationSettings, MerginAccount, Operation, SyncProject
+from supervisor import conflicts as conflicts_mod
 from supervisor import content, facts, layout, mergin_api, operations as opsm
 from supervisor import verify as verify_mod
 from supervisor.logs import tail
@@ -294,6 +295,8 @@ def project_detail(request, pk):
     context.update(_events_context(project, request))
     context["tables"] = facts.tables_for(project)
     context["verification"] = facts.verification_for(project)
+    context["conflicts"] = conflicts_mod.list_saved(project.work_dir)
+    context["keep_conflicts"] = conflicts_mod.KEEP
     context["can_operate"] = request.user.has_perm("registry.change_syncproject")
     context["now_date"] = _today()
     context.update(_log_context(project))
@@ -303,6 +306,18 @@ def project_detail(request, pk):
     context["hooks_open"] = bool(hook_runs) and hook_runs[0].ok is False
     context.update(_runs_context(project))
     return render(request, "ui/project.html", context)
+
+
+@login_required
+@permission_required("registry.change_syncproject", raise_exception=True)
+@require_GET
+def project_conflict_file(request, pk, name):
+    """Download one saved rebase conflict file (slice 17, A3; operators)."""
+    project = get_object_or_404(SyncProject, pk=pk)
+    path = conflicts_mod.saved_dir(project.work_dir) / name
+    if not conflicts_mod.safe_name(name) or not path.is_file():
+        raise Http404("no such conflict file")
+    return FileResponse(open(path, "rb"), content_type="application/json", as_attachment=True, filename=name)
 
 
 @login_required

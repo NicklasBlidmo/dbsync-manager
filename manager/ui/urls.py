@@ -19,6 +19,7 @@ urlpatterns = [
     path("projects/<int:pk>/operation/<slug:kind>/", views.project_operation, name="project_operation"),
     path("projects/<int:pk>/operation/", views.project_operation_panel, name="project_operation_panel"),
     path("projects/<int:pk>/verify/", views.project_verify, name="project_verify"),
+    path("projects/<int:pk>/conflicts/<str:name>", views.project_conflict_file, name="project_conflict_file"),
     path("operations/<int:pk>/retry/", views.operation_retry, name="operation_retry"),
     path("operations/<int:pk>/cancel/", views.operation_cancel, name="operation_cancel"),
     path("scheduled/table/", views.scheduled_table, name="scheduled_table"),

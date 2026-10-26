@@ -142,6 +142,31 @@ class PagesTests(TestCase):
         self.assertNotContains(self.client.get(reverse("home")), "no recipients")
         self.assertNotContains(self.client.get(reverse("project", args=[self.project.pk])), "not mailed")
 
+    def test_project_page_lists_conflict_files_and_operators_download(self):
+        self.client.login(username="operator", password="pw")
+        page = self.client.get(reverse("project", args=[self.project.pk]))
+        self.assertContains(page, "0 rebase conflict files")
+        self.assertContains(page, "No rebase conflicts recorded")
+        with tempfile.TemporaryDirectory() as tmp, override_settings(DBSYNC_DATA_DIR=Path(tmp)):
+            directory = self.project.work_dir / "conflicts"
+            directory.mkdir(parents=True)
+            name = "20261027T101502-1-punkter.gpkg.json"
+            (directory / name).write_text('{"geodiff": [{"table": "punkter", "type": "conflict", "fid": "17", '
+                                          '"changes": [{"column": 3, "base": "a", "old": "f", "new": "d"}]}]}')
+            page = self.client.get(reverse("project", args=[self.project.pk]))
+            self.assertContains(page, "1 rebase conflict file")
+            self.assertContains(page, "latest 2026-10-27 10:15:02")
+            self.assertContains(page, reverse("project_conflict_file", args=[self.project.pk, name]))
+            response = self.client.get(reverse("project_conflict_file", args=[self.project.pk, name]))
+            self.assertEqual(response.status_code, 200)
+            self.assertIn('"fid": "17"', b"".join(response.streaming_content).decode())
+            self.assertEqual(self.client.get(reverse("project_conflict_file", args=[self.project.pk, "x.json"])).status_code, 404)
+            self.client.login(username="viewer", password="pw")
+            page = self.client.get(reverse("project", args=[self.project.pk]))
+            self.assertContains(page, "1 rebase conflict file")
+            self.assertNotContains(page, "download")
+            self.assertEqual(self.client.get(reverse("project_conflict_file", args=[self.project.pk, name])).status_code, 403)
+
     def test_home_filter(self):
         self.client.login(username="viewer", password="pw")
         response = self.client.get(reverse("projects_table"), {"health": "ok"})

@@ -33,7 +33,7 @@ from registry import events
 from registry.crypto import SecretError
 from registry.models import Event, Hook, Operation, SyncConnection, SyncProject, SyncRun, SyncStatus
 
-from . import alerts, check, conditions, dbinspect, exits, hooks, housekeeping, layout, logtail, operations, processes, scheduling
+from . import alerts, check, conditions, conflicts, dbinspect, exits, hooks, housekeeping, layout, logtail, operations, processes, scheduling
 from . import verify as verify_mod
 from .config_render import ConfigRenderError, render_config, write_config
 from .logs import rotate_if_needed, tail
@@ -232,6 +232,7 @@ class Supervisor:
             "log": work_dir / processes.LOG_NAME,
             "stderr": work_dir / processes.STDERR_NAME,
             "pidfile": work_dir / processes.PIDFILE_NAME,
+            "tmp": work_dir / processes.TMP_SUBDIR,
         }
 
     # --- startup: re-attach to daemons a previous supervisor left running ----
@@ -442,6 +443,8 @@ class Supervisor:
         # Own temp dir per daemon and a pause between starts: two daemons
         # started in the same second otherwise share geodiff's temp file
         # names in /tmp and crash each other (review note 2026-09-28b).
+        # Emptying it would discard a conflict file the last cycle left.
+        self._collect_conflicts(project, paths)
         tmpdir = processes.private_tmpdir(paths["work_dir"])
         env = dict(os.environ, TMPDIR=str(tmpdir), TMP=str(tmpdir), TEMP=str(tmpdir))
         self._stagger()
@@ -477,6 +480,7 @@ class Supervisor:
         # Read new log lines before rotating, or copy-and-truncate would
         # discard lines not yet ingested.
         self._pump_log(project, rt, paths)
+        self._collect_conflicts(project, paths)
         max_bytes = settings.DBSYNC_LOG_MAX_MB * 1024 * 1024
         for name in ("log", "stderr"):
             if rotate_if_needed(paths[name], max_bytes, settings.DBSYNC_LOG_KEEP):
@@ -672,6 +676,15 @@ class Supervisor:
             return
         if counts.get("runs") or counts.get("events"):
             log.info("log for %s: %s", project, counts)
+
+    def _collect_conflicts(self, project, paths):
+        """geodiff's rebase conflict file waits in the daemon's TMPDIR (slice 17, A)."""
+        try:
+            conflicts.collect(project, paths["tmp"], paths["work_dir"])
+        except DatabaseError:
+            raise
+        except Exception:  # noqa: BLE001 - a conflict record must never break the loop
+            log.exception("conflict collection failed for %s", project)
 
     # --- step 2: stop --------------------------------------------------------
 

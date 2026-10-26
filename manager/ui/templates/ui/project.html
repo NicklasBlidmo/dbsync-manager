@@ -95,6 +95,30 @@
   <p class="muted">The same structure, with the project's state, is <code>GET /api/v1/projects/{{ project.pk }}/</code> (docs/api.md).</p>
 </details>
 
+<details class="section">
+  <summary class="section-title">Conflicts <span class="muted">· {{ conflicts|length }} rebase conflict file{{ conflicts|length|pluralize }}{% if conflicts %} · latest {{ conflicts.0.at|date:"Y-m-d H:i:s" }}{% endif %} · two-way: both sides changed the same value, the server's stands, the database's is here</span></summary>
+  <table class="table">
+    <thead><tr><th>When</th><th>GeoPackage</th><th>Layer</th><th class="num">Conflicts</th><th>Rows (fid)</th>{% if can_operate %}<th></th>{% endif %}</tr></thead>
+    <tbody>
+    {% for entry in conflicts %}
+      {% for table, info in entry.tables.items %}
+      <tr>
+        <td class="muted nowrap">{{ entry.at|date:"Y-m-d H:i:s" }}</td>
+        <td>{{ entry.connection }}</td>
+        <td>{{ table }}</td>
+        <td class="num">{{ info.count }}{% if info.deleted_on_server %} <span class="muted">({{ info.deleted_on_server }} deleted on the server)</span>{% endif %}</td>
+        <td class="muted">{{ info.fids|slice:":12"|join:", " }}{% if info.fids|length > 12 %} …{% endif %}</td>
+        {% if can_operate %}<td>{% if forloop.first %}<a href="{% url 'project_conflict_file' project.pk entry.name %}">download</a>{% endif %}</td>{% endif %}
+      </tr>
+      {% endfor %}
+    {% empty %}
+      <tr><td colspan="{% if can_operate %}6{% else %}5{% endif %}" class="muted">No rebase conflicts recorded. In a one-way project a rebase is an error (nothing may write modified); in a two-way project a conflict means the field and the database changed the same value between two cycles.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  <p class="muted">The last {{ keep_conflicts }} files are kept under the project's work dir; <code>GET /api/v1/projects/{{ project.pk }}/conflicts/</code> lists them (docs/api.md).</p>
+</details>
+
 <details class="section"{% if hooks_open %} open{% endif %}>
   <summary class="section-title">Hooks <span class="muted">· {{ hook_runs|length }} run{{ hook_runs|length|pluralize }}{% if hooks_latest %} · latest {{ hooks_latest|date:"H:i:s" }}{% endif %} · output is masked and capped, design §8</span></summary>
   <div id="hooks" hx-get="{% url 'project_hooks' project.pk %}" hx-trigger="every 15s" hx-swap="innerHTML">

@@ -1,5 +1,9 @@
 # Offering patch 0002 upstream
 
+*Filed 2026-10-26: issue MerginMaps/db-sync#193, pull request #194 from
+`NicklasBlidmo/db-sync:graceful-stop-on-sigterm` (three commits on 2.4.0:
+the patch, the test, a black pass).*
+
 Patch `0002` is the manager's only local change to db-sync. This file
 holds the issue text, the pull request text and the test change that go
 with it, so filing it is copy and paste (there is no GitHub CLI on the

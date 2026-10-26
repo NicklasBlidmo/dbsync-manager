@@ -288,6 +288,13 @@ class SyncProject(OwnedModel):
     post_init_ok_at = models.DateTimeField(null=True, blank=True, editable=False)
 
     notify_emails = ArrayField(models.EmailField(), default=list, blank=True)
+    # Slice 17: a rebase conflict (two-way, both sides changed the same
+    # value; the server wins) is an event; this mails it too.
+    mail_on_conflict = models.BooleanField(
+        default=False,
+        help_text="Mail the alert recipients for every rebase conflict (a database edit dropped because the field "
+                  "changed the same value). Off: the conflict is an event on the project page only.",
+    )
     updated_at = models.DateTimeField(auto_now=True)
     removed_at = models.DateTimeField(null=True, blank=True, editable=False)
 

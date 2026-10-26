@@ -203,7 +203,8 @@ class SyncProjectAdmin(OwnedAdmin):
     fieldsets = [
         (None, {"fields": ["mergin_project", "mergin_project_id", "mergin_account", "database"]}),
         ("Sync", {"fields": ["schema_prefix", "init_from", "sleep_time", "desired_state"]}),
-        ("Hooks and alerts", {"fields": ["post_init_hook", "pre_remove_hook", "post_pull_hook", "notify_emails"]}),
+        ("Hooks and alerts", {"fields": ["post_init_hook", "pre_remove_hook", "post_pull_hook", "notify_emails",
+                                         "mail_on_conflict"]}),
         ("Observed (read-only)", {"fields": [
             "process_state", "process_reason", "health", "health_since", "post_init_ok_at", "removed_at",
         ]}),

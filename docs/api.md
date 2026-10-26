@@ -71,6 +71,7 @@ Every live project with its state (D). Example (one project, shortened):
       "count_divergence": [],
       "content_divergence": {},
       "last_verification": null,
+      "conflicts": {"last_at": null, "count_30d": 0},
       "connections": [
         {
           "sync_file": "1-polygoner.gpkg",
@@ -117,6 +118,13 @@ Field notes:
   one-way project it is also the condition `content_divergence:...`.
 - `last_verification`: the latest verify operation (below) with `ok`
   true/false once done, or null.
+- `conflicts`: rebase conflicts (slice 17): `last_at` of the newest
+  saved conflict file (ISO or null) and `count_30d`, the number of files
+  from the last 30 days. A conflict file is written when both the field
+  and the database changed the same value of the same row between two
+  cycles of a two-way project; the server's value stands and the
+  database's is in the file. `GET /api/v1/projects/<id>/conflicts/`
+  lists them.
 
 ## `GET /api/v1/projects/<id>/`
 
@@ -147,6 +155,28 @@ the GeoPackage path and every layer with the schemas it syncs into.
 read it (`checked_at`); `skipped_by` is `skip_tables`, `include_tables`
 or null. A table that is synced lives as `<modified_schema>.<name>` and
 `<base_schema>.<name>`.
+
+## `GET /api/v1/projects/<id>/conflicts/`
+
+The saved rebase conflict files of a project, newest first (the last 50
+are kept):
+
+```json
+{
+  "conflicts": [
+    {"name": "20261027T101502-1-punkter.gpkg.json", "at": "2026-10-27T10:15:02+01:00",
+     "connection": "1-punkter.gpkg", "count": 2,
+     "tables": {"punkter": {"count": 2, "fids": ["17", "41"], "deleted_on_server": 0}}}
+  ]
+}
+```
+
+`GET /api/v1/projects/<id>/conflicts/<name>/` returns one file as
+geodiff wrote it: `{"name": ..., "geodiff": [{"table", "type":
+"conflict", "fid", "changes": [{"column": <position>, "base", "old",
+"new"}]}]}` where `old` is the server's value (which stands) and `new`
+the database's (dropped); a change without `old` is a database update of
+a row the server deleted.
 
 ## `POST /api/v1/projects/<id>/verify/`
 

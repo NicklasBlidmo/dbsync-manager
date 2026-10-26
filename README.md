@@ -298,6 +298,35 @@ read-only while the daemon keeps running. A difference raises
 daemon's own detection. Also `manage.py verify --project <id>` and the
 API below; a daily run is a scheduled hook that calls the API.
 
+### Two-way sync
+
+A project is two-way when the Mergin account is Writer on it (the
+direction badge follows the permission at every check). Then database
+edits in `modified` are pushed to Mergin on the next cycle, and the
+field's changes are pulled into `base` and `modified`. When both sides
+changed between two cycles, db-sync rebases the database's changes on
+top of the server's (`geodiff rebase-db`):
+
+1. Different rows, or different columns of one row, merge: both sides
+   end up with both changes.
+2. The same column of the same row is a conflict: the server's value
+   stands on both sides and the database's value is dropped.
+3. A database update of a row the field deleted is dropped with the
+   row; the other order is recorded by the field test (review note
+   `…-two-way-test.md`).
+4. Every dropped database value is in a conflict file that the manager
+   keeps: the project page's **Conflicts** section lists them with the
+   layer and the rows (fid), operators download the file, and one
+   `warning` event names the rows. Nothing is mailed unless the
+   project's `mail_on_conflict` is on (admin), because in a two-way
+   project a conflict is expected behaviour. In a one-way project a
+   rebase can only mean someone wrote into `modified`: it is the
+   error-level condition `content_divergence` with its mail.
+
+The recommendation the first installation follows: one-way during
+field work unless database edits must reach the field, and never both
+a field crew and a database writer on the same rows.
+
 ### JSON API
 
 Tools next to the manager read every project's state and table list,

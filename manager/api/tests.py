@@ -5,11 +5,14 @@ the shapes match docs/api.md.
 """
 
 import json
+import tempfile
 from datetime import time as dtime
+from pathlib import Path
 
 from django.contrib.auth.models import Group, User
-from django.test import TestCase, tag
+from django.test import TestCase, override_settings, tag
 from django.urls import reverse
+from django.utils import timezone
 
 from registry.models import ApiToken, Database, MerginAccount, Operation, SyncConnection, SyncProject, SyncStatus
 from registry.permissions import ensure_groups
@@ -85,8 +88,9 @@ class ApiTests(TestCase):
         for key in ("id", "mergin_project", "mergin_account", "database", "schema_prefix", "desired_state",
                     "process_state", "process_reason", "health", "health_since", "direction", "versions",
                     "last_pull_confirmed_at", "last_attempt_at", "last_check_at", "active_conditions",
-                    "count_divergence", "content_divergence", "last_verification", "connections"):
+                    "count_divergence", "content_divergence", "last_verification", "conflicts", "connections"):
             self.assertIn(key, state, key)
+        self.assertEqual(state["conflicts"], {"last_at": None, "count_30d": 0})
         self.assertEqual(state["versions"], {"server": 12, "checkout": 12, "database": 11})
         self.assertEqual(state["direction"], "two_way")
         self.assertEqual(state["count_divergence"], ["db_behind:1-punkter.gpkg"])
@@ -110,6 +114,30 @@ class ApiTests(TestCase):
         self.assertEqual(layers["punkter"]["modified_schema"], "p3922_s_punkter")
         self.assertEqual(self.get(reverse("api_project", args=[999]), self.viewer_token).status_code, 404)
         self.assertIsNotNone(ApiToken.objects.get(name="MerginQA").last_used_at)
+
+    def test_conflicts_list_and_file(self):
+        with tempfile.TemporaryDirectory() as tmp, override_settings(DBSYNC_DATA_DIR=Path(tmp)):
+            directory = self.project.work_dir / "conflicts"
+            directory.mkdir(parents=True)
+            stamp = timezone.localtime().strftime("%Y%m%dT%H%M%S")
+            name = f"{stamp}-1-punkter.gpkg.json"
+            (directory / name).write_text(json.dumps({"geodiff": [
+                {"table": "punkter", "type": "conflict", "fid": "17",
+                 "changes": [{"column": 3, "base": "a", "old": "field", "new": "db"}]}]}))
+            state = self.get(reverse("api_project", args=[self.project.pk]), self.viewer_token).json()["project"]
+            self.assertEqual(state["conflicts"]["count_30d"], 1)
+            self.assertTrue(state["conflicts"]["last_at"].startswith(timezone.localdate().isoformat()))
+            response = self.get(reverse("api_project_conflicts", args=[self.project.pk]), self.viewer_token)
+            self.assertEqual(response.status_code, 200)
+            entry = response.json()["conflicts"][0]
+            self.assertEqual((entry["name"], entry["connection"], entry["count"]), (name, "1-punkter.gpkg", 1))
+            self.assertEqual(entry["tables"]["punkter"]["fids"], ["17"])
+            response = self.get(reverse("api_project_conflict_file", args=[self.project.pk, name]), self.viewer_token)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()["geodiff"][0]["changes"][0]["old"], "field")
+            self.assertEqual(self.get(reverse("api_project_conflict_file", args=[self.project.pk, "nope.json"]),
+                                      self.viewer_token).status_code, 404)
+            self.assertEqual(self.get(reverse("api_project_conflicts", args=[self.project.pk])).status_code, 401)
 
     def test_verify_is_for_operators_and_creates_one_operation(self):
         url = reverse("api_project_verify", args=[self.project.pk])
