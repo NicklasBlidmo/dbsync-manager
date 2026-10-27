@@ -86,3 +86,40 @@ is kept. Two conflict files in `conflicts/`, both as expected.
 
 Review note: `2026-10-26f-slice17b.md`.
 
+
+## 17b verified (2026-10-26 evening, `46df61c` on the production server)
+
+- **T6d detected.** Field update of a database-deleted row (fid 630):
+  warning event "field update lost: table 1-punkter row (column 0 =
+  630) was deleted in the database; the update from Mergin Maps
+  (column 11: '…') is dropped with the row". Patch 0003 works against a
+  real pull; the rebase's geodiff WARNING lines did not become error
+  events.
+- **T6b wording.** Same-column conflict on fid 3: "rebase: 1 field value
+  in 1-punkter (Beskrivning) overwritten by the database value, fid 3.
+  The overwritten field values are in conflicts/…json"; database value
+  on both sides; third conflict file. Direction right this time.
+- Two invalid runs on the way, both worth a line in the test docs: an
+  `UPDATE` to the value a row already has is not a database change
+  (`base` = `modified`), so no rebase happens and the field's edit
+  simply applies; and the three edits must fall inside **one** pause
+  window, the database edit after the project shows `paused`, or they
+  serialise into T2 followed by a plain pull.
+
+### New finding: the stuck rule fires on a resumed project
+
+At 15:31:42, seconds after a resume, the stuck rule restarted the
+daemon: "checkout is not advancing … server is at v47, checkout still
+at v46 since 13:51 while db-sync is running". The checkout had stood
+still because the project had been paused for most of the afternoon;
+`local_version_changed_at` is not reset by pause/resume and the rule
+does not wait for the daemon to complete a cycle after a start. Harmless
+with the graceful stop, but a project resumed after a weekend would get
+an immediate restart and warning. Fix for the next slice: reset the
+stuck clock on resume and on every daemon start, and evaluate the rule
+only after `DBSYNC_CHECK_INTERVAL` with the daemon running. Also: the
+pause path reports "stopped cleanly after 30 s" when the daemon exited
+within a second; the figure is measured to the reaping tick, not to the
+exit. Report the real exit time (the child's exit is observed on the
+tick; store the time the SIGTERM was sent and the time the exit was
+first seen, and say "within one tick" if that is all we know).

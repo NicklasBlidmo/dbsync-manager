@@ -1,35 +1,105 @@
 # dbsync-manager
 
-Web UI and supervisor for [Mergin Maps DB Sync](https://github.com/MerginMaps/db-sync):
-set up, monitor, pause and remove synchronisations between Mergin Maps
-projects and PostGIS, packaged as one Docker container.
+A web UI and supervisor for [Mergin Maps DB Sync](https://github.com/MerginMaps/db-sync):
+set up, monitor, pause, repair and remove synchronisations between Mergin
+Maps projects and PostGIS, packaged as one Docker container next to your
+database. MIT, Linux, Python/Django, no external services.
 
-The design is in [docs/dbsync-manager-design.md](docs/dbsync-manager-design.md).
-Section numbers in code comments (§6, §8, ...) refer to it.
+## Why
 
-## Version
+DB Sync is a daemon: one process per Mergin Maps project, configured by a
+YAML file, logging to a file, exiting when something goes wrong. It does
+its one job well. What it does not do is run a fleet of itself: start a
+sync for every survey an organisation has in the field, notice when one
+has stopped or silently fallen behind the field, tell somebody, let a
+non-developer add the next project or pause one during database work,
+and explain, afterwards, what happened and when.
 
-v1.0.0, first release. Design §14's ten slices are complete, and the tool
-has run in production at the author's organisation since 2026-09-25,
-where it took over a hand-run sync without re-initialisation (design §15
-describes that adoption as a worked example).
+dbsync-manager is that layer. It runs the unmodified db-sync image and
+adds a registry of projects, a supervisor that keeps the daemons running
+and checks their results against the database, a web UI, e-mail alerts
+with recovery mails, hooks for the organisation's own scripts, and a small
+JSON API for the tools that come next. It has run in production at the
+author's organisation since September 2026, taking over a hand-run sync
+without re-initialisation; the field notes of that installation are in
+`docs/review-notes/`.
 
-What v1 does: it runs one db-sync daemon per Mergin Maps project from a
-registry in PostgreSQL, restarts it with backoff and re-attaches after its
-own restarts. Every few minutes it compares the Mergin server version, the
-checkout and the database, and the row counts of GeoPackage, base and
-modified schemas, and derives a health state and alert conditions that go
-out by e-mail once when they start and once when they end. A web UI shows
-every project with desired, process and health badges, a project page
-with per-file state, live log, pull history, events and hooks, and an add
-wizard that derives schema names, checks the target database and adopts
-existing schemas. Hooks run organisation-specific SQL and scripts around
-init, pull and removal with a per-run pgpass file and masked output.
-Remove and re-init are restart-safe multi-step operations with retry and
-cancel.
+![The Projects page: four syncs with desired, process and health badges, direction, version, last pull and database, with Pause all, Resume all and Add sync](docs/images/Project_list.png)
 
-Out of scope: syncing forms or metadata (part 2 of the project), editing
-data, and multi-tenant use; one installation per organisation.
+*The Projects page: one row per sync, health at a glance, Pause all before database work.*
+
+## How it fits together
+
+![Overview: Mergin Maps, the dbsync-manager container with db-sync daemons, supervisor, web UI and API, PostGIS, e-mail, hooks and other tools](docs/images/overview.svg)
+
+One container, three parts. The **db-sync daemons** are upstream's code,
+one process per project, each pulling the project's GeoPackages from
+Mergin Maps and applying the changes to a `base` and a `modified` schema
+per file in PostGIS (and pushing database edits back when the project is
+two-way). The **supervisor** starts, restarts and gracefully stops them,
+and every few minutes compares the Mergin server version, the checkout,
+the database's version comment, row counts and row content, derives a
+health state and a set of conditions, and mails once when a condition
+starts and once when it ends. The **web UI and API** read and write the
+same registry: a projects table with desired, process and health badges,
+a project page with per-file state, live log, pull history, events,
+hooks, tables, conflicts, and the operations (pause, resume, re-init,
+verify, remove, add wizard), plus `/api/v1/` with bearer tokens for
+other tools.
+
+Boundaries that hold everywhere: the manager owns one schema in the
+database (`dbsync_manager`, the registry); the sync schemas belong to
+db-sync; everything else, views, triggers, the organisation's own
+tables, is the installation's and is touched only through hooks the
+installation writes. db-sync is used as released, plus two small patches
+kept in `patches/` until upstream ships them. The tool has no opinion
+about file naming, schema naming beyond a prefix, or what the data is.
+
+![A project page: health line, Pause / Verify / Re-init / Remove, one row per GeoPackage with schemas, checkout and database versions and row counts, and a finished re-init operation with its seven steps](docs/images/Project_detail.png)
+
+*A project page: every GeoPackage with its schemas, versions and row counts, and the last operation step by step.*
+
+## What it does
+
+- **Runs the syncs**: one db-sync daemon per project from the registry,
+  restart with backoff, re-attach after its own restart, graceful stop
+  between cycles on every path (deploy, pause, re-init, shutdown).
+- **Watches them**: versions, row counts and row content per table every
+  check interval; health `ok` / `catching_up` / `behind` / `failed`;
+  conditions such as `db_behind`, `stuck`, `content_divergence`,
+  `checkout_inconsistent`, `mergin_unreachable`, `process_crashed`, each
+  with one alert mail and one recovery mail, grouped per Mergin server
+  where that makes sense; reminders for crash loops.
+- **Explains**: an event log per project with filters and a terminal
+  command, the daemon's log and stderr live, pull history confirmed by
+  the database, conflict records from two-way rebases.
+- **Operates**: add wizard (schema names derived, target database
+  checked, existing schemas adopted), pause/resume, Pause all/Resume all,
+  re-init, remove without dropping, verify (checkout against `base`
+  through geodiff), checkout migration between db-sync layouts.
+- **Extends**: hooks around init, pull and removal, and scheduled hooks
+  for the installation (a nightly `pg_dump` is the first), run with the
+  right credentials, masked output and failure mails; a read-only JSON
+  API with one write action (start verify).
+- **Stays small**: Django + HTMX, PostgreSQL for everything, s6 in one
+  container, `tools/setup.sh` for a first install, an optional bundled
+  PostGIS for trying it out.
+
+Out of scope: editing data, syncing forms or metadata, multi-tenant use
+(one installation per organisation), and anything specific to a
+particular field template or discipline.
+
+## Status
+
+v1.0.0 was tagged 2026-09-28 after the design's ten slices
+([docs/dbsync-manager-design.md](docs/dbsync-manager-design.md); section
+numbers in code comments, §6, §8, refer to it). Slices 11–17 since then
+are in `CHANGELOG.md`: release readiness, a setup script proven in three
+clean-room installs, scheduled hooks, graceful stop, exit classification,
+content checks, verify, the JSON API, db-sync 2.4.0 with upstream's
+version of our fix for one checkout per connection, and two-way sync
+tested and documented. Upstream contributions: MerginMaps/db-sync #187
+(merged, in 2.4.0) and #194 (open).
 
 ## Quick start
 
@@ -106,13 +176,6 @@ docker compose run --rm --no-deps --entrypoint python manager generate_keys.py
 Copy `DBSYNC_MANAGER_SECRET_KEY` somewhere safe outside the server. Once a
 credential has been saved it cannot be replaced (design §10).
 
-### First-time setup
-
-Under Settings (admin) → Registry: a Mergin account and a database. The
-add wizard starts with every GeoPackage of a project ticked; Select all
-and Select none are on the file list. The tool has no opinion about file
-naming.
-
 ### When it does not start
 
 The container runs a preflight before `migrate` and prints one line per
@@ -127,7 +190,10 @@ holds cookies from another application on the same host name. The manager
 uses its own cookie names to avoid this; clear the site data once if the
 browser still has cookies from an older build.
 
-### Operations
+## Operations
+
+Day-to-day: what a deploy does to running syncs, how to stop everything
+at once, what a failed health means, and how to find out what happened.
 
 **Deploys, restarts and stops are graceful.** `docker compose up -d
 --build`, `restart`, `stop` and `down` send SIGTERM to the container;
@@ -191,7 +257,7 @@ date/time and level filter and paging; the terminal has
 docker compose exec manager python manage.py events --project <id or workspace/name> --since 2026-10-20T13:00 [--level error]
 ```
 
-### Database
+## Database
 
 The `postgis` service is behind the Compose profile `postgis` and is not
 started by a plain `docker compose up`. Most installations already have a
@@ -237,7 +303,7 @@ CREATE SCHEMA dbsync_manager AUTHORIZATION dbsync_manager;
 All manager tables, Django's own included, live in that schema. Nothing is
 created in `public` or in synced schemas.
 
-### Hooks and the organisation's scripts
+## Hooks and the organisation's scripts
 
 Hooks run inside the container (design §8). Scripts that live outside the
 image are bind-mounted read-only through a server-local
@@ -277,7 +343,7 @@ server: check `docker compose exec manager pg_dump --version`, and if
 the server is newer set `PG_CLIENT_MAJOR=<server major>` in `.env` and
 rebuild, which installs that client from apt.postgresql.org.
 
-### Tables, content checks and verify
+## Tables, content checks and verify
 
 The project page's **Tables** section lists every layer of each
 GeoPackage with its geometry column and the `modified`/`base` schemas it
@@ -298,7 +364,7 @@ read-only while the daemon keeps running. A difference raises
 daemon's own detection. Also `manage.py verify --project <id>` and the
 API below; a daily run is a scheduled hook that calls the API.
 
-### Two-way sync
+## Two-way sync
 
 A project is two-way when the Mergin account is Writer on it (the
 direction badge follows the permission at every check). Then database
@@ -341,14 +407,14 @@ layer exactly (a PointZ layer refuses a 2D point), and nothing the field
 form would fill in (defaults, expressions) is filled in for a database
 insert.
 
-### JSON API
+## JSON API
 
 Tools next to the manager read every project's state and table list,
 and start verify, through `/api/v1/` with a bearer token created under
 Settings → API tokens. [docs/api.md](docs/api.md) has the endpoints,
 the JSON shapes and the stability promise.
 
-### E-mail
+## E-mail
 
 Alerts go to the project's recipients, or, when the project has none, to
 the installation's default list under Settings → Installation settings
@@ -379,9 +445,9 @@ manager/              Django project
   supervisor/         `manage.py supervise` (§6): processes, config, check, health
   ui/                 HTMX pages (§9): projects, project page, add wizard, login
   ui/static/ui/app.css  the stylesheet; its :root tokens are the visual contract
-patches/              applied to db-sync at image build (#163)
+patches/              applied to db-sync at image build: 0002 graceful stop, 0003 lost-update log
 tools/                setup.sh (first install), backup.sh (nightly dump, docs/backup.md)
-docs/                 design document, backup and e-mail guides, review notes
+docs/                 design document, backup, e-mail and API guides, images, review notes
 ```
 
 ## Development

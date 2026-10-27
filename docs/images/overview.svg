@@ -1,0 +1,97 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="500" viewBox="0 0 880 500" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="13">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#004C45"/>
+    </marker>
+  </defs>
+  <rect width="880" height="500" fill="#ffffff"/>
+
+  <!-- Mergin Maps -->
+  <rect x="30" y="40" width="190" height="110" rx="8" fill="#EFF5F3" stroke="#004C45" stroke-width="1.5"/>
+  <text x="125" y="66" text-anchor="middle" font-weight="600" fill="#004C45">Mergin Maps</text>
+  <text x="125" y="88" text-anchor="middle" fill="#12181F">cloud or self-hosted</text>
+  <text x="125" y="110" text-anchor="middle" fill="#12181F">one project per survey;</text>
+  <text x="125" y="128" text-anchor="middle" fill="#12181F">field devices sync gpkg files</text>
+
+  <!-- PostGIS -->
+  <rect x="660" y="40" width="190" height="110" rx="8" fill="#EFF5F3" stroke="#004C45" stroke-width="1.5"/>
+  <text x="755" y="66" text-anchor="middle" font-weight="600" fill="#004C45">PostGIS</text>
+  <text x="755" y="88" text-anchor="middle" fill="#12181F">per synced GeoPackage:</text>
+  <text x="755" y="106" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-size="12" fill="#12181F">&lt;prefix&gt;_b_&lt;file&gt;  (base)</text>
+  <text x="755" y="124" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-size="12" fill="#12181F">&lt;prefix&gt;_s_&lt;file&gt;  (modified)</text>
+  <text x="755" y="142" text-anchor="middle" fill="#12181F" font-size="12">+ the registry schema</text>
+
+  <!-- container -->
+  <rect x="250" y="25" width="380" height="440" rx="10" fill="none" stroke="#004C45" stroke-width="2" stroke-dasharray="6 4"/>
+  <text x="440" y="48" text-anchor="middle" font-weight="600" fill="#004C45">dbsync-manager container</text>
+
+  <!-- daemons -->
+  <rect x="275" y="70" width="330" height="80" rx="8" fill="#ffffff" stroke="#004C45" stroke-width="1.5"/>
+  <text x="440" y="92" text-anchor="middle" font-weight="600" fill="#12181F">db-sync daemons (Lutra Consulting)</text>
+  <text x="440" y="112" text-anchor="middle" fill="#12181F">one process per project, pull / push every cycle</text>
+  <text x="440" y="132" text-anchor="middle" fill="#12181F" font-size="12">upstream image + two small patches</text>
+
+  <!-- supervisor -->
+  <rect x="275" y="180" width="330" height="120" rx="8" fill="#d9f2e4" stroke="#004C45" stroke-width="1.5"/>
+  <text x="440" y="202" text-anchor="middle" font-weight="600" fill="#12181F">supervisor</text>
+  <text x="440" y="222" text-anchor="middle" fill="#12181F">starts, restarts and stops daemons</text>
+  <text x="440" y="240" text-anchor="middle" fill="#12181F">checks versions, counts, content</text>
+  <text x="440" y="258" text-anchor="middle" fill="#12181F">health, conditions, alert mails</text>
+  <text x="440" y="276" text-anchor="middle" fill="#12181F">hooks, scheduled jobs, operations</text>
+
+  <!-- web UI + API -->
+  <rect x="275" y="330" width="155" height="110" rx="8" fill="#ffffff" stroke="#004C45" stroke-width="1.5"/>
+  <text x="352" y="352" text-anchor="middle" font-weight="600" fill="#12181F">web UI</text>
+  <text x="352" y="372" text-anchor="middle" fill="#12181F" font-size="12">projects, health, events,</text>
+  <text x="352" y="388" text-anchor="middle" fill="#12181F" font-size="12">log, add wizard, pause,</text>
+  <text x="352" y="404" text-anchor="middle" fill="#12181F" font-size="12">re-init, verify, conflicts</text>
+  <text x="352" y="424" text-anchor="middle" fill="#12181F" font-size="12">viewer / operator / admin</text>
+
+  <rect x="450" y="330" width="155" height="110" rx="8" fill="#ffffff" stroke="#004C45" stroke-width="1.5"/>
+  <text x="527" y="352" text-anchor="middle" font-weight="600" fill="#12181F">JSON API</text>
+  <text x="527" y="372" text-anchor="middle" fill="#12181F" font-size="12">/api/v1/, bearer tokens</text>
+  <text x="527" y="388" text-anchor="middle" fill="#12181F" font-size="12">state, tables, divergence,</text>
+  <text x="527" y="404" text-anchor="middle" fill="#12181F" font-size="12">conflicts, start verify</text>
+  <text x="527" y="424" text-anchor="middle" fill="#12181F" font-size="12">for QA tools and CLIs</text>
+
+  <!-- arrows daemons <-> mergin / postgis -->
+  <line x1="220" y1="95" x2="275" y2="95" stroke="#004C45" stroke-width="1.5" marker-start="url(#arr)" marker-end="url(#arr)"/>
+  <text x="247" y="86" text-anchor="middle" font-size="11" fill="#004C45">https</text>
+  <line x1="605" y1="95" x2="660" y2="95" stroke="#004C45" stroke-width="1.5" marker-start="url(#arr)" marker-end="url(#arr)"/>
+  <text x="632" y="86" text-anchor="middle" font-size="11" fill="#004C45">geodiff</text>
+
+  <!-- supervisor -> daemons -->
+  <line x1="440" y1="180" x2="440" y2="150" stroke="#004C45" stroke-width="1.5" marker-end="url(#arr)"/>
+  <!-- supervisor -> postgis (registry + checks) -->
+  <line x1="605" y1="230" x2="755" y2="230" stroke="#004C45" stroke-width="1.5"/>
+  <line x1="755" y1="230" x2="755" y2="150" stroke="#004C45" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="690" y="222" text-anchor="middle" font-size="11" fill="#004C45">registry, checks</text>
+  <!-- UI/API -> supervisor via registry -->
+  <line x1="440" y1="330" x2="440" y2="300" stroke="#004C45" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- outside: operators, mail, scripts, tools -->
+  <rect x="30" y="200" width="190" height="60" rx="8" fill="#EFF5F3" stroke="#004C45" stroke-width="1.5"/>
+  <text x="125" y="225" text-anchor="middle" font-weight="600" fill="#004C45">e-mail</text>
+  <text x="125" y="244" text-anchor="middle" fill="#12181F" font-size="12">alerts and recoveries, grouped</text>
+  <line x1="275" y1="230" x2="220" y2="230" stroke="#004C45" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <rect x="30" y="300" width="190" height="70" rx="8" fill="#EFF5F3" stroke="#004C45" stroke-width="1.5"/>
+  <text x="125" y="325" text-anchor="middle" font-weight="600" fill="#004C45">your scripts</text>
+  <text x="125" y="344" text-anchor="middle" fill="#12181F" font-size="12">hooks: post_init, post_pull,</text>
+  <text x="125" y="360" text-anchor="middle" fill="#12181F" font-size="12">pre_remove, scheduled (backup)</text>
+  <line x1="275" y1="290" x2="220" y2="320" stroke="#004C45" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <rect x="30" y="400" width="190" height="60" rx="8" fill="#EFF5F3" stroke="#004C45" stroke-width="1.5"/>
+  <text x="125" y="425" text-anchor="middle" font-weight="600" fill="#004C45">operators</text>
+  <text x="125" y="444" text-anchor="middle" fill="#12181F" font-size="12">browser, LAN</text>
+  <line x1="220" y1="400" x2="275" y2="385" stroke="#004C45" stroke-width="1.5" marker-start="url(#arr)" marker-end="url(#arr)"/>
+
+  <rect x="660" y="330" width="190" height="110" rx="8" fill="#EFF5F3" stroke="#004C45" stroke-width="1.5"/>
+  <text x="755" y="355" text-anchor="middle" font-weight="600" fill="#004C45">other tools</text>
+  <text x="755" y="376" text-anchor="middle" fill="#12181F" font-size="12">QA that reads the database,</text>
+  <text x="755" y="392" text-anchor="middle" fill="#12181F" font-size="12">a CLI that closes projects,</text>
+  <text x="755" y="408" text-anchor="middle" fill="#12181F" font-size="12">dashboards</text>
+  <line x1="605" y1="385" x2="660" y2="385" stroke="#004C45" stroke-width="1.5" marker-start="url(#arr)" marker-end="url(#arr)"/>
+
+  <text x="440" y="488" text-anchor="middle" font-size="11" fill="#5b6b68">Only the registry schema is the manager's own. Sync schemas belong to db-sync; everything else in the database belongs to the installation.</text>
+</svg>
