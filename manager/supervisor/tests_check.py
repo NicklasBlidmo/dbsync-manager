@@ -51,10 +51,11 @@ class Harness:
         self.status = SyncStatus()
         self.process_running = process_running
 
-    def check(self, obs, minutes):
+    def check(self, obs, minutes, running_since=None):
         return evaluate(
             self.status, obs, now=at(minutes), check_interval=INTERVAL, stuck_after=STUCK_AFTER,
             process_running=self.process_running, label="1-punkter.gpkg",
+            running_since=at(running_since) if running_since is not None else None,
         )
 
 
@@ -359,6 +360,26 @@ class HealthTests(SimpleTestCase):
         # Progress clears it.
         health, conds, _ = h.check(observed(server_version=12, local_version=12, db_version=12), 36)
         self.assertEqual((health, conds), (H.OK, set()))
+
+    def test_stuck_clock_restarts_with_the_daemon(self):
+        # 2026-10-26e: paused for hours, resumed, and the rule restarted the
+        # daemon within seconds because the checkout had not moved. Now the
+        # clock runs from the daemon's start, and the rule waits one check
+        # interval after it.
+        h = Harness(process_running=True)
+        h.check(observed(), 0)                                  # checkout last moved at minute 0
+        ahead = observed(server_version=12)
+        health, conds, _ = h.check(ahead, 182, running_since=180)   # resumed 2 min ago: not warmed up
+        self.assertEqual((health, conds), (H.CATCHING_UP, set()))
+        health, conds, _ = h.check(ahead, 200, running_since=180)   # 20 min since the start: not yet
+        self.assertEqual((health, conds), (H.CATCHING_UP, set()))
+        health, conds, msgs = h.check(ahead, 211, running_since=180)  # 31 min since the start: stuck
+        self.assertEqual((health, conds), (H.STUCK, {"stuck"}))
+        self.assertIn("since 2026-09-22 15:00", msgs["stuck"])     # the start, not the checkout's last move
+        self.assertIn("started 2026-09-22 15:00", msgs["stuck"])
+        # A restart resets it again; a move of the checkout clears it.
+        health, conds, _ = h.check(ahead, 215, running_since=212)
+        self.assertEqual((health, conds), (H.CATCHING_UP, set()))
 
     def test_stuck_is_not_evaluated_while_paused(self):
         h = Harness(process_running=False)

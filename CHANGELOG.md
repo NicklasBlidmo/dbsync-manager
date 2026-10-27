@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Slice 18 (two-way test 2026-10-26e, last section): the stuck rule's
+  clock runs from the later of the checkout's last move and the
+  daemon's start, and the rule waits one check interval after a start;
+  a project resumed after a long pause is no longer restarted at once.
+  Stop events report what is known: "stopped cleanly within N s" (the
+  exit is seen on the next tick) or "after N–M s" when the daemon
+  outlived a tick, instead of a figure measured to the reaping tick.
 - Slice 17 B (two-way test 2026-10-26e): the direction was the other
   way round. In a concurrent edit the database syncs last and wins: the
   field's value is overwritten on both sides, and a database update of

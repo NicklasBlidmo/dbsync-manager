@@ -52,6 +52,12 @@ Invariants learned the hard way:
 - db-sync 2.4.0 retries a failed login or init inside the process (about
   an hour with its default `max_failed_retries: 10`). The generated config
   sets it to 1 so the exit reaches `exits.classify_exit`; do not raise it.
+- The stuck rule (`check.evaluate`) measures from the later of the
+  checkout's last move and the daemon's start (`running_since`), and
+  only after one check interval of uptime: a paused project's checkout
+  stands still legitimately (2026-10-26e). A stop's duration in events
+  is bounded by ticks ("within N s" / "after N–M s"), never a figure
+  measured to the tick that reaped the child.
 - In a two-way rebase the database syncs last and wins: the field's
   value in a same-column conflict is overwritten on both sides, and a
   delete wins over an update either way (two-way test 2026-10-26e). The

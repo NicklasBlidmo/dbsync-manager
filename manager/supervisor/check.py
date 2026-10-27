@@ -333,11 +333,14 @@ def direction_of(permission, writers):
     return None
 
 
-def evaluate(status, obs, *, now, check_interval, stuck_after, process_running, label):
+def evaluate(status, obs, *, now, check_interval, stuck_after, process_running, label, running_since=None):
     """Update `status` in place from `obs`; return (health, conditions, messages).
 
     `label` names the connection in condition keys (its sync_file).
-    `process_running` is the supervisor's view; the stuck rule needs it.
+    `process_running` is the supervisor's view; the stuck rule needs it,
+    and `running_since` (when the current daemon started, aware datetime)
+    restarts its clock: a checkout that stood still while the project was
+    paused is not stuck (two-way test 2026-10-26e, slice 18).
     Nothing here touches the database; the caller saves `status`.
     """
     conditions = set()
@@ -455,18 +458,28 @@ def evaluate(status, obs, *, now, check_interval, stuck_after, process_running, 
                     "(one-way project: database edits that cannot have come from the field)"
                 )
 
-    # Stuck: server ahead, checkout not moving, daemon alive.
+    # Stuck: server ahead, checkout not moving, daemon alive and past its
+    # first check interval. The clock runs from the later of the checkout's
+    # last move and the daemon's start: a project resumed after a weekend
+    # stood still while paused, and the rule once restarted a daemon seconds
+    # after its resume for that (2026-10-26e).
     server_ahead = obs.server_version is not None and obs.local_version is not None and obs.server_version > obs.local_version
+    still_since = status.local_version_changed_at
+    if running_since is not None and running_since > still_since:
+        still_since = running_since
+    warmed_up = running_since is None or now - running_since >= timedelta(seconds=check_interval)
     stuck = (
         server_ahead
         and process_running
-        and now - status.local_version_changed_at > timedelta(seconds=stuck_after)
+        and warmed_up
+        and now - still_since > timedelta(seconds=stuck_after)
     )
     if stuck:
         conditions.add("stuck")
+        started = f", started {running_since:%Y-%m-%d %H:%M}" if running_since is not None else ""
         messages["stuck"] = (
             f"{label}: server is at v{obs.server_version}, checkout still at v{obs.local_version} "
-            f"since {status.local_version_changed_at:%Y-%m-%d %H:%M} while db-sync is running"
+            f"since {still_since:%Y-%m-%d %H:%M} while db-sync is running{started}"
         )
 
     if any(k.startswith(("divergence:", "stranded_db_edits:", "content_divergence:")) for k in conditions):
@@ -498,7 +511,7 @@ def worst(healths):
 # --- per project -------------------------------------------------------------
 
 
-def run_project_check(project, *, process_running: bool, now=None):
+def run_project_check(project, *, process_running: bool, now=None, running_since=None):
     """Gather, evaluate and save for every connection. Returns (health, conditions, messages)."""
     now = now or timezone.now()
     connections = list(project.connections.all())
@@ -519,6 +532,7 @@ def run_project_check(project, *, process_running: bool, now=None):
             stuck_after=settings.DBSYNC_STUCK_AFTER,
             process_running=process_running,
             label=conn.sync_file,
+            running_since=running_since,
         )
         status.save()
         if observed[conn.pk].content_checked and not any(k.startswith("content_divergence:") for k in conds):

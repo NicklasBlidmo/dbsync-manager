@@ -485,8 +485,27 @@ class ReconcilePauseTests(SimpleTestCase):
         child.alive = False
         child.exit_code = 0
         supervisor._reconcile(project)
-        self.assertIn("stopped cleanly after 0 s", events_mod.info.call_args.args[1])
+        # The exit is seen on a tick, not when it happened: an upper bound (slice 18).
+        self.assertIn("stopped cleanly within 0 s (the exit is seen on the next tick)", events_mod.info.call_args.args[1])
         events_mod.error.assert_not_called()
+
+    @mock.patch("supervisor.core.events")
+    @mock.patch.object(Supervisor, "_set_state")
+    def test_stop_event_gives_both_bounds_when_the_daemon_outlived_a_tick(self, set_state, events_mod):
+        supervisor = Supervisor(tick_seconds=1)
+        project = paused_project()
+        child = StubChild()
+        rt = Runtime(child=child)
+        supervisor.runtimes[project.pk] = rt
+        supervisor._reconcile(project)                 # SIGTERM
+        supervisor._reconcile(project)                 # still alive one tick later
+        rt.stopping_since -= 90                        # as if the ticks were 60 and 90 s after SIGTERM
+        rt.last_alive_at = rt.stopping_since + 60
+        child.alive = False
+        child.exit_code = 0
+        supervisor._reconcile(project)
+        self.assertIn("stopped cleanly after 60\u201390 s", events_mod.info.call_args.args[1])
+
 
     @mock.patch("supervisor.core.events")
     @mock.patch.object(Supervisor, "_set_state")
@@ -525,3 +544,33 @@ class ReconcilePauseWithRealChildTests(SimpleTestCase):
                 supervisor._reconcile(project)          # reaped -> stopped
             self.assertIsNone(supervisor.runtimes[project.pk].child)
             set_state.assert_called_with(project, PS.STOPPED, "")
+
+
+class CheckStartTimeTests(SimpleTestCase):
+    """Slice 18: the check learns when the daemon started (ReconcilePauseTests mocks _maybe_check away)."""
+
+    @mock.patch("supervisor.core.logtail.close_confirmed_pulls", return_value=0)
+    @mock.patch.object(Supervisor, "_project_db_version", return_value=None)
+    @mock.patch.object(Supervisor, "_maybe_post_pull")
+    @mock.patch.object(Supervisor, "_track_mergin")
+    @mock.patch("supervisor.core.conditions")
+    @mock.patch("supervisor.core.check.run_project_check", return_value=("ok", set(), {}))
+    def test_check_gets_the_daemon_start_time_for_the_stuck_clock(self, run_check, *_):
+        supervisor = Supervisor(tick_seconds=1)
+        project = running_project()
+        rt = Runtime(child=StubChild())
+        supervisor.runtimes[project.pk] = rt
+        now = time.monotonic()
+        rt.last_start_at = now - 600
+        with mock.patch.object(SyncProject, "connections", new=mock.PropertyMock(return_value=mock.Mock(all=lambda: [1]))):
+            supervisor._maybe_check(project, rt, now)
+        running_since = run_check.call_args.kwargs["running_since"]
+        from django.utils import timezone
+
+        self.assertLess(abs((timezone.now() - running_since).total_seconds() - 600), 5)
+        # Not running: no start time.
+        rt.child = None
+        rt.last_check_at = 0.0
+        with mock.patch.object(SyncProject, "connections", new=mock.PropertyMock(return_value=mock.Mock(all=lambda: [1]))):
+            supervisor._maybe_check(project, rt, now)
+        self.assertIsNone(run_check.call_args.kwargs["running_since"])

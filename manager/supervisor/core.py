@@ -83,6 +83,7 @@ class Runtime:
     crashes: int = 0
     next_start_at: float = 0.0
     last_start_at: float = 0.0
+    last_alive_at: float = 0.0        # the last tick that saw the child alive (slice 18: stop events)
     blocked_reason: str = ""
     block_after_exit: str = ""        # set when a failed post_init hook stops the child
     last_check_at: float = 0.0
@@ -328,6 +329,8 @@ class Supervisor:
 
         if rt.child is not None and not rt.child.alive:
             self._handle_exit(project, rt, now)
+        elif rt.child is not None:
+            rt.last_alive_at = now
 
         if rt.hook_job is not None and rt.hook_job.done:
             self._finish_hook_job(project, rt)
@@ -710,13 +713,21 @@ class Supervisor:
 
     @staticmethod
     def _stopped_event(project, rt, child, now, why: str = ""):
-        waited = int(now - rt.stopping_since) if rt.stopping_since is not None else 0
+        """The exit is seen on a tick, not when it happens: say what is known
+        (slice 18). `upper` is SIGTERM to the tick that found the child gone,
+        `lower` SIGTERM to the last tick that saw it alive."""
+        sent = rt.stopping_since
+        upper = int(now - sent) if sent is not None else 0
+        lower = int(max(0.0, rt.last_alive_at - sent)) if sent is not None else 0
         suffix = f" {why}" if why else ""
         if rt.stop_killed:
-            events.error(project, f"db-sync (pid {child.pid}) ignored SIGTERM; killed after {waited} s{suffix}, "
+            events.error(project, f"db-sync (pid {child.pid}) ignored SIGTERM; killed after {upper} s{suffix}, "
                                   "the checkout may need Re-init")
+        elif lower <= 0:
+            events.info(project, f"db-sync (pid {child.pid}) stopped cleanly within {upper} s{suffix} "
+                                 "(the exit is seen on the next tick)")
         else:
-            events.info(project, f"db-sync (pid {child.pid}) stopped cleanly after {waited} s{suffix}")
+            events.info(project, f"db-sync (pid {child.pid}) stopped cleanly after {lower}\u2013{upper} s{suffix}")
         rt.stop_killed = False
 
     # --- step 3: exit --------------------------------------------------------
@@ -835,7 +846,12 @@ class Supervisor:
             and project.process_state == PS.RUNNING
             and project.desired_state == SyncProject.DesiredState.RUNNING
         )
-        health, wanted, messages = check.run_project_check(project, process_running=process_running)
+        # When this daemon started, for the stuck rule's clock (slice 18).
+        running_since = None
+        if process_running:
+            running_since = timezone.now() - timedelta(seconds=max(0.0, now - rt.last_start_at))
+        health, wanted, messages = check.run_project_check(project, process_running=process_running,
+                                                           running_since=running_since)
 
         # A Mergin outage is a condition with a delayed mail, not an error per
         # cycle (review note 2026-10-20); conditions.apply does not manage it.
@@ -1025,6 +1041,7 @@ class SupervisorIO:
         if child is None or not child.alive:
             return "no daemon running"
         now = time.monotonic()
+        rt.last_alive_at = now
         if rt.stopping_since is None:
             child.terminate()
             rt.stopping_since = now

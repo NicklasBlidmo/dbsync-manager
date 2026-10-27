@@ -203,7 +203,9 @@ stop takes up to 150 s (`stop_grace_period` in `docker-compose.yml`); do
 not shorten it. Before that patch a stop mid-pull left a checkout that
 db-sync refused to use until Re-init. Every project gets two events per
 stop: "stopping db-sync, waiting for the current cycle" and "stopped
-cleanly after N s" or "killed after N s".
+cleanly within N s" (the exit is seen on the supervisor's next tick, so
+this is an upper bound), "stopped cleanly after N–M s" when the daemon
+was still finishing its cycle a tick later, or "killed after N s".
 
 **Pause all / Resume all** on the Projects page (operators) stop every
 running sync between cycles and resume exactly the projects that Pause

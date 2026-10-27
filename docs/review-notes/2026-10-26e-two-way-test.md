@@ -123,3 +123,13 @@ within a second; the figure is measured to the reaping tick, not to the
 exit. Report the real exit time (the child's exit is observed on the
 tick; store the time the SIGTERM was sent and the time the exit was
 first seen, and say "within one tick" if that is all we know).
+
+## Applied (slice 18, 2026-10-27)
+
+| Finding | Done |
+|---|---|
+| stuck rule after resume/start | `check.evaluate(running_since=...)`: the clock runs from the later of the checkout's last move and the daemon's start, and the rule is evaluated only after one `DBSYNC_CHECK_INTERVAL` of uptime; the supervisor passes the start time of the current daemon (resume, restart and adoption all count as a start) |
+| real stop time | the stopped event is bounded by ticks: "stopped cleanly within N s (the exit is seen on the next tick)" or "after N–M s" when the daemon outlived a tick; `Runtime.last_alive_at` is the last tick that saw it alive, also for operations' stop_child |
+
+Review note: `2026-10-27-slice18-stuck-clock-and-stop-times.md`.
+
