@@ -91,15 +91,16 @@ particular field template or discipline.
 
 ## Status
 
-v1.0.0 was tagged 2026-09-28 after the design's ten slices
+**v1.1.0** (2026-10-27) is the first public release; `CHANGELOG.md` has
+the detail. v1.0.0 (2026-09-28) closed the design's ten slices
 ([docs/dbsync-manager-design.md](docs/dbsync-manager-design.md); section
-numbers in code comments, §6, §8, refer to it). Slices 11–17 since then
-are in `CHANGELOG.md`: release readiness, a setup script proven in three
-clean-room installs, scheduled hooks, graceful stop, exit classification,
-content checks, verify, the JSON API, db-sync 2.4.0 with upstream's
-version of our fix for one checkout per connection, and two-way sync
-tested and documented. Upstream contributions: MerginMaps/db-sync #187
-(merged, in 2.4.0) and #194 (open).
+numbers in code comments, §6, §8, refer to it). Slices 11–18 since then:
+release readiness, a setup script proven in three clean-room installs,
+scheduled hooks, graceful stop, exit classification, content checks,
+verify, the JSON API, db-sync 2.4.0 with upstream's version of our fix
+for one checkout per connection, and two-way sync tested and documented.
+Upstream contributions: MerginMaps/db-sync #187 (merged, in 2.4.0),
+#194 and #196 (open).
 
 ## Quick start
 

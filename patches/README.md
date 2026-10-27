@@ -8,7 +8,7 @@ a patch is deleted here once a db-sync release ships the fix and
 | Patch | What | Upstream |
 |---|---|---|
 | `0002-Stop-gracefully-on-SIGTERM.patch` | SIGTERM sets a flag; the loops stop at the next connection boundary, a pull or push in progress completes, exit 0 (review note 2026-10-20b, finding 1) | MerginMaps/db-sync#193, PR #194 (filed 2026-10-26) |
-| `0003-Report-field-updates-lost-to-a-database-delete.patch` | before a rebase, a row deleted in the database that the server's changeset updates is logged as a WARNING with the row's key and the field's values; logtail makes it a warning event (two-way test 2026-10-26e, T6d) | to be filed; issue text in `UPSTREAM.md` |
+| `0003-Report-field-updates-lost-to-a-database-delete.patch` | before a rebase, a row deleted in the database that the server's changeset updates is logged as a WARNING with the row's key and the field's values; logtail makes it a warning event (two-way test 2026-10-26e, T6d) | MerginMaps/db-sync#195, PR #196 (filed 2026-10-27) |
 
 Shipped upstream and removed here:
 

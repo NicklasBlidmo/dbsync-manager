@@ -1,6 +1,18 @@
 # Changelog
 
-## Unreleased
+## v1.1.0 (2026-10-27)
+
+The first public release. Since v1.0.0 the tool has run in production
+for a month with four projects, and the slices below came out of that:
+a setup script proven in three clean-room installs, scheduled hooks
+(nightly backup as the first), graceful stop on every path, exit
+classification so a deterministic failure is one mail and not a crash
+loop, content checks and Verify, a JSON API with tokens, db-sync 2.4.0
+with upstream's version of our one-checkout-per-connection fix, and
+two-way sync tested in the field and documented with its rules and its
+conflict records. Upstream: MerginMaps/db-sync #187 (merged), #194 and
+#196 (open). Upgrading from v1.0.0: see slice 16 below
+(`migrate_checkouts` once, after Verify on every project).
 
 - Slice 18 (two-way test 2026-10-26e, last section): the stuck rule's
   clock runs from the later of the checkout's last move and the

@@ -1,6 +1,10 @@
 # Offering the patches upstream
 
-Patch `0002` first (filed), then patch `0003` and the conflicts-file issue (below, to file).
+Patch `0002` (issue #193, PR #194) and patch `0003` with the conflicts-file issue (issue #195, PR #196, filed 2026-10-27), both from the fork on branches off `2.4.0`.
+
+*Filing rule: the issue body and the PR body are the text under their
+**Body:** lines only. The "Test" sections are files for the branch, not
+text for the description.*
 
 *Filed 2026-10-26: issue MerginMaps/db-sync#193, pull request #194 from
 `NicklasBlidmo/db-sync:graceful-stop-on-sigterm` (three commits on 2.4.0:
