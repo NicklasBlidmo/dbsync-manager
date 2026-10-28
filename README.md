@@ -59,6 +59,10 @@ about file naming, schema naming beyond a prefix, or what the data is.
 
 *A project page: every GeoPackage with its schemas, versions and row counts, and the last operation step by step.*
 
+![Further down the project page: the live tail of the daemon's log, and the pull and push history per version with one row per GeoPackage and whether the database confirmed the pull](docs/images/Project_detail_2.png)
+
+*Further down: the daemon's log, live, and the pull/push history per version, confirmed by the database rather than by a log line.*
+
 ## What it does
 
 - **Runs the syncs**: one db-sync daemon per project from the registry,
@@ -102,11 +106,16 @@ for one checkout per connection, and two-way sync tested and documented.
 Upstream contributions: MerginMaps/db-sync #187 (merged, in 2.4.0),
 #194 and #196 (open).
 
-## Quick start
+## Installation
 
-On a Linux host with Docker, one command asks the questions below, writes
-`.env`, generates the keys, builds, starts, waits for the health check and
-creates the first user:
+Requirements: a Linux host with Docker and Docker Compose, and a PostGIS
+server to sync into (or the bundled one, for trying it out). There are
+two ways to install; they end in the same place.
+
+### With the setup script
+
+One command asks the questions, writes `.env`, generates the keys,
+builds, starts, waits for the health check and creates the first user:
 
 ```sh
 sh tools/setup.sh
@@ -119,7 +128,11 @@ what it reports and run it again: it continues where it stopped, and
 prints the remaining commands in case you prefer to finish by hand. The
 Compose project is named after the directory, and a name another
 directory already uses is refused, so a second installation on the same
-host never replaces the first. By hand, the same steps are:
+host never replaces the first.
+
+### By hand
+
+The same steps, for those who want to see each one:
 
 1. `cp .env.example .env && chmod 600 .env`
 2. Check that the port is free before building, because a collision
@@ -140,6 +153,19 @@ host never replaces the first. By hand, the same steps are:
 6. `docker compose logs -f manager` until it prints "preflight: ... ok",
    the migrations and "tick: no projects".
 7. `docker compose exec manager python manage.py createsuperuser`
+
+No Python on the host? Generate the keys with the image instead, bypassing
+its entrypoint (which would run migrate first), and paste the two values
+onto the existing `DJANGO_SECRET_KEY=` and `DBSYNC_MANAGER_SECRET_KEY=` lines:
+
+```sh
+docker compose run --rm --no-deps --entrypoint python manager generate_keys.py
+```
+
+Copy `DBSYNC_MANAGER_SECRET_KEY` somewhere safe outside the server. Once a
+credential has been saved it cannot be replaced (design §10).
+
+### First login and the first project
 
 Open `http://<ALLOWED_HOSTS entry>:<HTTP_PORT>/` and log in with the account
 you just created; there are no default credentials. The groups `viewer`,
@@ -165,17 +191,6 @@ Select the row in Settings → Databases and run the action **Test
 connection**: it reports the PostgreSQL and PostGIS versions and the number
 of schemas, or the error. A wrong user name or an address that points at
 another server shows here, not in the wizard.
-
-No Python on the host? Generate the keys with the image instead, bypassing
-its entrypoint (which would run migrate first), and paste the two values
-onto the existing `DJANGO_SECRET_KEY=` and `DBSYNC_MANAGER_SECRET_KEY=` lines:
-
-```sh
-docker compose run --rm --no-deps --entrypoint python manager generate_keys.py
-```
-
-Copy `DBSYNC_MANAGER_SECRET_KEY` somewhere safe outside the server. Once a
-credential has been saved it cannot be replaced (design §10).
 
 ### When it does not start
 
